@@ -1,0 +1,15 @@
+RayPrompt
+
+This product includes logic derived from OpenRayneo
+(https://github.com/Tobi1chi/OpenRayneo), Copyright 2026 Tobi1chi,
+licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0):
+AA55 frame format, CRC16-XMODEM, pairing TLV encoding, the authentication
+digest construction, BLE UUIDs and the real-time prompt (0x17) message bodies.
+Modified for iOS: device-info tag values follow the iOS exchange documented by
+Turbo-IO research (no Turbo-IO code is included).
+
+"RayNeo" is a trademark of its owner. This project is not affiliated with or
+endorsed by RayNeo.
+
+The full license text is included in ThirdPartyLicenses/OpenRayneo-Apache-2.0.txt.

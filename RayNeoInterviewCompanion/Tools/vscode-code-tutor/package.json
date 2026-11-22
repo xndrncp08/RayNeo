@@ -1,0 +1,15 @@
+{
+  "name": "rayneo-code-tutor-companion",
+  "displayName": "RayPrompt Code Tutor Companion",
+  "description": "Reports Code Tutor step progress (expected lines present + error count) to the paired iPhone. Never sends source.",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.85.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onCommand:codeTutor.pair"],
+  "contributes": {
+    "commands": [
+      { "command": "codeTutor.pair", "title": "Code Tutor: Pair with iPhone" },
+      { "command": "codeTutor.disconnect", "title": "Code Tutor: Disconnect" }
+    ]
+  }
+}

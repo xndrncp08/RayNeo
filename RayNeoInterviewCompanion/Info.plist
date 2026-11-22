@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RayPrompt listens for questions and spoken guidance only while you run a session. Audio is processed on this iPhone and never saved.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>RayPrompt transcribes speech on this iPhone to detect questions and synchronize the teleprompter. Enabling Gemini sends questions and selected context to Google.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth connects to your RayNeo iO glasses to show answers on the display.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Only when you turn on editor pairing: your code editor on the same Wi-Fi reports which lines of the current Code Tutor step are present.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_codetutor._tcp</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>bluetooth-central</string>
+	</array>
+</dict>
+</plist>
