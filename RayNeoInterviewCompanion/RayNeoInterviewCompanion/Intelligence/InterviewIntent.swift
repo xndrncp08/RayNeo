@@ -29,6 +29,8 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
     var requirements: [String] = []
     /// Separate tasks of a multi-part request ("design it", "explain the trade-offs", "describe testing").
     var parts: [String] = []
+    /// Parallel items (roles, systems, options) the answer must address individually.
+    var items: [String] = []
     /// A scenario was set up but its task has not been stated yet: the endpoint waits a little longer.
     var awaitingTask = false
 
@@ -67,6 +69,7 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
             best.kind = strongest.kind
         }
         best.requirements = requirements
+        best.items = Self.enumeration(in: text)
         best.parts = parts.count >= 2 ? parts : []
         best.awaitingTask = actionable.allSatisfy(\.awaitingTask)
         if best.parts.count >= 2 {
@@ -212,7 +215,7 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
     /// Explicit constraints after "must / should / needs to / handle / without / including …", split into items.
     static func requirements(in text: String) -> [String] {
         let lower = text.lowercased()
-        let cue = #"\b(must|should|needs? to|has to|have to|handles?|handling|supports?|without|including|while|ensure|make sure|so that|that can|able to|guarantee|deal with|cope with|survive|tolerate|account for)\b"#
+        let cue = #"\b(must|should|needs? to|has to|have to|handles?|handling|supports?|without|including|while|ensure|make sure|so that|that can|able to|guarantee|deal with|cope with|survive|tolerate|account for|especially|particularly|specifically|in particular|such as|using)\b"#
         guard let regex = try? NSRegularExpression(pattern: cue) else { return [] }
         var items: [String] = []
         let ns = lower as NSString
@@ -226,8 +229,8 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
             for (index, piece) in pieces.enumerated() {
                 // Stop at the next cue: it starts its own requirement.
                 let trimmed = piece.components(separatedBy: CharacterSet.whitespaces)
-                    .prefix(while: { !["must", "should", "without", "while", "including"].contains($0) }).joined(separator: " ")
-                    .replacingOccurrences(of: #"^(be able to|be|also|the|to|any|all)\s+"#, with: "", options: .regularExpression)
+                    .prefix(while: { !["must", "should", "without", "while", "including", "especially", "particularly"].contains($0) }).joined(separator: " ")
+                    .replacingOccurrences(of: #"^(be able to|be|also|the|to|any|all|when|where|if|for)\s+"#, with: "", options: .regularExpression)
                 let words = TextSimilarity.contentWords(trimmed)
                 guard (1...9).contains(words.count) else { continue }
                 let item = index == 0 && cueWord == "without" ? "without " + trimmed : trimmed
@@ -235,6 +238,17 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
             }
         }
         return Array(items.prefix(8))
+    }
+
+    /// Parallel single-word items the answer must treat one by one: "students, instructors, and administrators".
+    static func enumeration(in text: String) -> [String] {
+        let lower = text.lowercased()
+        guard let match = lower.range(of: #"\b([a-z][a-z-]{2,}), ([a-z][a-z-]{2,})(, [a-z][a-z-]{2,})*,? (and|or) ([a-z][a-z-]{2,})\b"#, options: .regularExpression) else { return [] }
+        let items = lower[match].replacingOccurrences(of: #",? (and|or) "#, with: ", ", options: .regularExpression)
+            .components(separatedBy: ", ").map { $0.trimmingCharacters(in: .whitespaces) }
+        let notItems: Set<String> = ["the", "and", "but", "then", "also", "when", "how", "why", "what", "where", "this", "that", "which", "with"]
+        guard items.count >= 3, items.allSatisfy({ !notItems.contains($0) && !TextSimilarity.stopwords.contains($0) }) else { return [] }
+        return items
     }
 
     /// "Design the system, explain the trade-offs, and describe how you'd test it" → three parts.
@@ -254,9 +268,11 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
     /// ("The application must handle thousands of submissions…") or, after a scenario, its task
     /// ("Walk me through your approach."). Questions ("What if…?") are follow-ups, never continuations.
     static func isContinuation(_ text: String, of previous: String) -> Bool {
-        let before = classify(previous)
+        // The previous turn may itself end mid-clause ("…PostgreSQL RLS,"): judge its request without the cut.
+        let before = classify(previous.trimmingCharacters(in: CharacterSet(charactersIn: ",;:-\u{2014}\u{2013} ")))
         guard before.actionable, !text.trimmingCharacters(in: .whitespaces).hasSuffix("?") else { return false }
         let lower = stripLeadIns(text.lowercased())
+        if isQualifierClause(text) { return true }
         let intent = classify(text)
         if intent.kind == .smallTalk || isFirstPerson(text) { return false }
         if intent.actionable, !intent.awaitingTask {
@@ -265,6 +281,17 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
         let cue = #"^(the|this|that|it|each|every|our|your|users?|students?|staff|customers?|you|we|they|there|also|plus|assume|assuming|keep in mind|make sure|bear in mind|requirements?|constraints?|including|with|without|so that|which|but|and)\b"#
         let constraint = #"\b(must|should|needs? to|has to|have to|will need|can'?t|cannot|may|might|is expected|are expected|handles?|supports?|without|including|there (are|is|will be)|up to|at least|around \d|per (second|minute|day|hour)|within)\b"#
         return lower.range(of: cue, options: .regularExpression) != nil && lower.range(of: constraint, options: .regularExpression) != nil
+    }
+
+    /// "…especially when students, instructors and administrators have different permissions." qualifies the
+    /// request before it; so does a subordinate clause ("where…", "when…"), but not "When would you use Redis".
+    static func isQualifierClause(_ text: String) -> Bool {
+        let lower = stripLeadIns(text.lowercased())
+        if lower.range(of: #"^(especially|particularly|specifically|in particular|including|mainly|mostly|primarily|for example|for instance|e\.?g\.?|such as|given that|considering|assuming|keeping in mind|bearing in mind|so that|such that|along with|as well as|rather than|instead of|without|with|using|across|for (each|every|all|both))\b"#, options: .regularExpression) != nil {
+            return true
+        }
+        return lower.range(of: #"^(where|when|while|if|because|since|whenever|in case|unless|whereas)\b"#, options: .regularExpression) != nil
+            && lower.range(of: #"^\w+ (\w+ )?(would|do|does|did|should|can|could|will|is|are) (you|we|i)\b"#, options: .regularExpression) == nil
     }
 
     // MARK: Prompt guidance
@@ -281,6 +308,8 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
             structure = "This is a coding task. Clarify the requirement in a few words, explain the approach, give the implementation the format asks for, then cover edge cases and how you'd validate it."
         case .comparison:
             structure = "This is a comparison. Say what each one is, the differences that matter in practice, the advantages and limits of each, and when you'd choose one over the other. Give both sides real coverage."
+        case .security where items.count >= 2:
+            structure = "This is an access-control design question with different roles. For each role, say specifically what it can read or change and why (for example ownership of its own records, access limited to assigned resources, full administrative rights), and how that is enforced on the server and in the database (row level security policies tied to the authenticated user and role, not only checks in the UI). Mention keeping privileged keys out of the client, and finish with how you'd test authorization for each role, including that one role cannot see another's data."
         case .security:
             structure = "This is a security scenario. Address the actual task first. Verify identity before changing anything, find the root cause (for example in sign-in and audit logs), fix it for the affected user or resource with least privilege, and never weaken organisation-wide security. If an exception is unavoidable, keep it approved, narrowly scoped and time-limited. Finish with how you'd verify the fix and document it."
         case .architecture:
@@ -299,6 +328,9 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
         var lines = [structure, "Length: \(sentenceRange(length)) Never drop one of the interviewer's requirements just to stay short."]
         if !requirements.isEmpty {
             lines.append("The interviewer's explicit requirements; your answer must address each one: " + requirements.joined(separator: "; ") + ".")
+        }
+        if items.count >= 2 {
+            lines.append("Treat each of these separately and specifically, not as one group: " + items.joined(separator: "; ") + ".")
         }
         if parts.count >= 2 {
             lines.append("This request has \(parts.count) parts; cover each in order: " + parts.joined(separator: "; ") + ".")
@@ -340,16 +372,40 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
     /// Requirements an answer never mentions (stem or close-synonym match). Deterministic; used for at most
     /// one targeted regeneration, never a second model call by default.
     func missingRequirements(in answer: String) -> [String] {
-        let answerStems = Set(TextSimilarity.contentWords(answer).map { Self.stem($0) })
-        let lowerAnswer = answer.lowercased()
-        return requirements.filter { requirement in
-            let generic: Set<String> = ["handle", "handles", "thousands", "lot", "lots", "many", "able", "make", "sure", "work", "time", "without"]
-            let stems = TextSimilarity.contentWords(requirement).map { $0.lowercased() }.filter { !generic.contains($0) }.map { Self.stem($0) }
-            guard !stems.isEmpty else { return false }
-            return !stems.contains { stem in
-                answerStems.contains(stem) || (Self.synonyms[stem] ?? []).contains { lowerAnswer.contains($0) }
+        // A requirement counts only where a clause actually says something about it (four words or more),
+        // not where it is merely named in a list.
+        let itemStems = items.map { Self.stem(TextSimilarity.contentWords($0).first ?? $0) }
+        var text = answer.lowercased()
+        if itemStems.count >= 2 {
+            // "…for students, instructors, and administrators" only names them: lists of the items are not explanations.
+            let item = "(?:" + itemStems.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|") + #")[a-z']*"#
+            text = text.replacingOccurrences(of: #"\b"# + item + #"(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)"# + item + ")+",
+                                             with: "[list]", options: .regularExpression)
+        }
+        let clauses = text.components(separatedBy: CharacterSet(charactersIn: ".;!?,:"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.split(separator: " ").count >= 4 }
+        let clauseStems = clauses.map { Set(TextSimilarity.contentWords($0).map { Self.stem($0) }) }
+        func said(_ stem: String, avoiding others: [String] = []) -> Bool {
+            clauses.indices.contains { index in
+                (clauseStems[index].contains(stem) || (Self.synonyms[stem] ?? []).contains { clauses[index].contains($0) })
+                    && !others.contains { clauseStems[index].contains($0) }
             }
         }
+        var missing = requirements.filter { requirement in
+            let generic: Set<String> = ["handle", "handles", "thousands", "lot", "lots", "many", "able", "make", "sure", "work", "time", "without", "differ", "differe", "use", "using"]
+            let stems = TextSimilarity.contentWords(requirement).map { $0.lowercased() }.filter { !generic.contains($0) }.map { Self.stem($0) }
+            guard !stems.isEmpty else { return false }
+            return !stems.contains { said($0) }
+        }
+        // Each listed item needs a clause of its own ("Students can only read their own rows"), not a shared list.
+        for (index, item) in items.enumerated() {
+            let others = itemStems.enumerated().filter { $0.offset != index }.map(\.element)
+            if !said(itemStems[index], avoiding: others) { missing.append("\(item) (named but not explained individually)") }
+        }
+        if kind == .security, items.count >= 2, answer.lowercased().range(of: #"\b(test|tests|testing|tested|verify|verifying|confirm)\b"#, options: .regularExpression) == nil {
+            missing.append("how you'd test authorization for each role")
+        }
+        return missing
     }
 
     static let synonyms: [String: [String]] = [
@@ -362,6 +418,9 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
         "secur": ["least privilege", "mfa", "policy", "policies", "secure", "protect"],
         "weake": ["least privilege", "policy", "policies", "secure", "exception"],
         "organ": ["organisation", "organization", "tenant", "everyone", "company-wide", "policy"],
+        "admin": ["admin"],
+        "permi": ["policy", "policies", "can read", "can update", "can see", "can only", "access", "allowed"],
+        "acces": ["policy", "policies", "can read", "can see", "can only", "allowed"],
     ]
 
     static func stem(_ word: String) -> String { String(word.lowercased().prefix(5)) }

@@ -82,6 +82,9 @@ nonisolated struct QuestionDetector: Sendable {
 
     private func isFollowUp(_ lower: String, previous: String?) -> Bool {
         guard previous != nil else { return false }
-        return Self.followUpCues.contains(where: { lower.hasPrefix($0) || lower.contains(" " + $0) })
+        let core = stripLeadIns(lower)
+        // A cue inside a long, self-contained question ("Explain why would… for students, instructors…") is not one.
+        let short = core.split(separator: " ").count <= 12
+        return Self.followUpCues.contains(where: { core.hasPrefix($0) || short && lower.contains(" " + $0) })
     }
 }

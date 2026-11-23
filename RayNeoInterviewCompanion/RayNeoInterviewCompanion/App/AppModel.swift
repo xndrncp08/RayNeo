@@ -110,6 +110,10 @@ struct Diagnostics: Equatable {
     private let speaker = SpeakerActivityService()
     private var speech: (any SpeechRecognizing)?
     private var assembler: TranscriptTurnAssembler
+    /// When the current utterance started and when the last turn was emitted (wall clock), so an answer is not
+    /// shown while the interviewer is still finishing the question it answers.
+    private var speechStartedAt: Date?
+    private var lastTurnEmittedAt: Date?
     /// Assembler output waiting for the next tick (revisions arrive with final results).
     private var assembled: [AssemblerOutput] = []
     private var tickTask: Task<Void, Never>?
@@ -210,6 +214,12 @@ struct Diagnostics: Equatable {
         }
         snippets.onCodeStep = { [unowned self] blockID, language, structures in
             self.editor.expect(blockID: blockID, language: language, structures: structures)
+        }
+        engine.questionContinues = { [unowned self] in
+            guard self.assembler.hasPendingSpeech, let started = self.speechStartedAt, let emitted = self.lastTurnEmittedAt,
+                  started >= emitted, started.timeIntervalSince(emitted) <= self.settings.continuationGap else { return false }
+            // Reading an answer aloud is not the interviewer continuing.
+            return self.engine.echoOverlap(self.assembler.pendingText) < self.settings.echoThreshold
         }
         engine.onInterviewerTurn = { [unowned self] text, turnID in
             guard let turnID else { return }
@@ -551,7 +561,10 @@ struct Diagnostics: Equatable {
         switch event {
         case .partial(let text):
             guard !muted else { return }
-            if !assembler.hasPendingSpeech { DiagnosticLog.shared.record(.pipeline, "Speech started (partial transcript)") }
+            if !assembler.hasPendingSpeech {
+                speechStartedAt = Date()
+                DiagnosticLog.shared.record(.pipeline, "Speech started (partial transcript)")
+            }
             volatileText = text
             assembler.partial(text, at: Date())
             reading.ingest(text, isFinal: false, speaker: liveSpeakerLabel())
@@ -562,6 +575,7 @@ struct Diagnostics: Equatable {
             guard !muted else { return }
             volatileText = ""
             transcript.append(TranscriptSegment(text: text, start: start, end: end))
+            if !assembler.hasPendingSpeech { speechStartedAt = Date() }
             let before = (assembler.revisions, assembler.merges, assembler.duplicates)
             if let output = assembler.final(text, start: start, end: end, at: Date()) { assembled.append(output) }
             if assembler.revisions > before.0 { DiagnosticLog.shared.record(.pipeline, "Transcript revision detected (segment replaced, no new turn)") }
@@ -633,11 +647,13 @@ struct Diagnostics: Equatable {
         case .turn(let turn): (turn, false)
         case .revised(let turn): (turn, true)
         }
+        lastTurnEmittedAt = Date()
         // "Design a job system…" [pause] "The application must handle worker crashes…" is one request: the
         // continuation is folded into the previous turn, which is re-evaluated with every constraint.
         if !isRevision, assembler.turns.count >= 2, let previous = assembler.turns.dropLast().last,
            turn.start - previous.end <= settings.continuationGap, engine.echoOverlap(turn.text) < settings.echoThreshold,
-           InterviewIntent.isContinuation(turn.text, of: previous.text), let merged = assembler.absorb(turn) {
+           InterviewIntent.isContinuation(turn.text, of: previous.text),
+           let merged = assembler.absorb(turn, asClause: InterviewIntent.isQualifierClause(turn.text)) {
             DiagnosticLog.shared.record(.pipeline, "Turn #\(turn.id) continues turn #\(merged.id): merged into one request (revision \(merged.revision))")
             turn = merged
             isRevision = true

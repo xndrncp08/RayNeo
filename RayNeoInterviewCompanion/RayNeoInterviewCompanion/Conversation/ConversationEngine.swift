@@ -45,6 +45,15 @@ struct FilterCounters: Equatable, Sendable {
     var onInterviewerTurn: (_ text: String, _ turnID: Int?) -> Void = { _, _ in }
     /// Who the last turn was attributed to, for the transcript ("Interviewer", "Reading the answer", …).
     private(set) var lastTurnRole: String?
+    /// The interviewer is still talking right after the turn being answered (probably finishing the question):
+    /// nothing from that generation reaches the glasses yet.
+    var questionContinues: () -> Bool = { false }
+    /// Longest wait for that continuation before a finished answer is shown anyway.
+    var continuationHold: Double = 3
+    /// How each turn's request was first answered, so a revision regenerates the same request
+    /// (same kind and context) instead of becoming a follow-up to its own partial answer.
+    private var turnRequests: [Int: (kind: SpeechEventKind, previous: (String, String)?, restore: InterviewQuestion?)] = [:]
+    private var revisingOwnAnswer = false
 
     // MARK: Automatic question handoff
 
@@ -191,6 +200,8 @@ struct FilterCounters: Equatable, Sendable {
             if turn.isRevision {
                 guard handledTurns[id] != key else {
                     counters.duplicate += 1
+                    // The wording is kept current even when nothing material changed.
+                    if turnAnswers[id] == currentAnswer?.answerID, currentAnswer != nil { currentAnswer?.question = text; currentQuestion?.text = text }
                     return note("Turn #\(id) revised without changing the request; no new generation")
                 }
                 note("Turn #\(id) revised: re-evaluating")
@@ -199,6 +210,18 @@ struct FilterCounters: Equatable, Sendable {
             }
             handledTurns[id] = key
             if handledTurns.count > 200, let oldest = handledTurns.keys.min() { handledTurns[oldest] = nil }
+        }
+
+        // The interviewer finished a question whose shorter version is already answered (or being answered):
+        // the completed question replaces it as the same request, with the context the first version had.
+        if turn.isRevision, let id = turn.turnID, let original = turnRequests[id],
+           generatingTurnID == id || (currentAnswer != nil && turnAnswers[id] == currentAnswer?.answerID) {
+            lastTurnRole = "Interviewer"
+            onInterviewerTurn(text, id)
+            var question = classifier.analyze(text, previousQuestion: original.previous?.0)
+            question.isFollowUp = original.previous != nil
+            note("Turn #\(id) completed: regenerating the answer for the finalized question (\(original.kind.label))", quoting: text)
+            return startGeneration(for: question, kind: original.kind, context: (original.previous, original.restore))
         }
 
         var question = classifier.analyze(text, previousQuestion: currentQuestion?.text)
@@ -414,7 +437,8 @@ struct FilterCounters: Equatable, Sendable {
 
     // MARK: Generation
 
-    private func startGeneration(for question: InterviewQuestion, kind: SpeechEventKind? = nil, prepareOnly: Bool = false) {
+    private func startGeneration(for question: InterviewQuestion, kind: SpeechEventKind? = nil, prepareOnly: Bool = false,
+                                 context: (previous: (String, String)?, restore: InterviewQuestion?)? = nil) {
         generationTask?.cancel()
         generationCount += 1
         pendingEvidence = 0
@@ -428,9 +452,12 @@ struct FilterCounters: Equatable, Sendable {
         recentQuestions.append((Self.requestKey(question.text, context: contextKey()), now(), currentTurnID))
         generatingTurnID = currentTurnID
         if recentQuestions.count > 10 { recentQuestions.removeFirst() }
-        let previous = question.isFollowUp ? currentAnswer.map { ($0.question, $0.text) } : nil
+        let previous = context.map(\.previous) ?? (question.isFollowUp ? currentAnswer.map { ($0.question, $0.text) } : nil)
         note("Question detected (\(String(format: "%.2f", question.score)), \(question.reason))", quoting: question.text)
-        let pendingCurrent = currentQuestion
+        let pendingCurrent = context.map(\.restore) ?? currentQuestion
+        revisingOwnAnswer = context != nil
+        if let id = currentTurnID, context == nil { turnRequests[id] = (generationKind, previous, pendingCurrent) }
+        if turnRequests.count > 100, let oldest = turnRequests.keys.min() { turnRequests[oldest] = nil }
         if !prepareOnly { currentQuestion = question }
         state = .generating
         record(.generationStarted)
@@ -500,9 +527,19 @@ struct FilterCounters: Equatable, Sendable {
                 state = currentAnswer == nil ? .listening : (isLocked ? .answerLocked : .waitingForNextQuestion)
                 return note("Answer #\(answerID) prepared (medium confidence); tap Show or keep reading")
             }
+            // Still finishing the question? Wait (bounded) before anything reaches the glasses; a revision of this
+            // turn cancels this generation during the wait.
+            let holdStarted = now()
+            var holds = 0
+            while questionContinues(), holds < Int(continuationHold * 10), now().timeIntervalSince(holdStarted) < continuationHold {
+                holds += 1
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            if now().timeIntervalSince(holdStarted) >= 0.1 { note(String(format: "Answer #%d held %.1fs while the interviewer finished speaking", answerID, now().timeIntervalSince(holdStarted))) }
             let replacing = currentAnswer != nil
-            // Every automatic replacement can be undone (classic and continuous conversation).
-            if let currentAnswer { undoAnswer = (restoreQuestion, currentAnswer) }
+            // Every automatic replacement can be undone (classic and continuous conversation); the answer to a
+            // question's own shorter version is superseded, not something to undo back to.
+            if let currentAnswer, !revisingOwnAnswer { undoAnswer = (restoreQuestion, currentAnswer) }
             answer.generationComplete = output.generationComplete
             answer.completion = output.completion
             answer.provider = output.provider
@@ -600,6 +637,8 @@ struct FilterCounters: Equatable, Sendable {
     private func considerEarlyFrame(_ partial: String, category: QuestionCategory, answerID: Int) {
         // Partials of a superseded generation never reach the lens.
         guard settings.earlyFirstFrame, !prepareOnly, answerID == generatingAnswerID, category == .technical else { return }
+        // Never show the start of an answer while the interviewer is still finishing the question.
+        guard !questionContinues() else { return }
         // The same clean-up as the final answer, so the early frame is a prefix of it.
         let complete = NaturalAnswerStyle.polish(AnswerFormatter.completeSentences(partial))
         guard !complete.isEmpty, complete != earlyFrameSource else { return }

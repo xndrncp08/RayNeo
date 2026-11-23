@@ -161,10 +161,11 @@ nonisolated struct TranscriptTurnAssembler: Sendable {
 
     /// Folds a later turn (a continuation such as "The application must handle…") into the turn before it,
     /// which is re-emitted as a revision with the same ID. Returns nil when there is no earlier turn.
-    mutating func absorb(_ turn: ConversationTurn) -> ConversationTurn? {
+    /// `asClause`: the turn qualifies the previous sentence ("…RLS." + "Especially when…" → "…RLS, especially when…").
+    mutating func absorb(_ turn: ConversationTurn, asClause: Bool = false) -> ConversationTurn? {
         guard let index = turns.firstIndex(where: { $0.id == turn.id }), index > 0 else { return nil }
         var previous = turns[index - 1]
-        previous.text = Self.stitch(previous.text, turn.text)
+        previous.text = asClause ? Self.joinClause(previous.text, turn.text) : Self.stitch(previous.text, turn.text)
         previous.end = max(previous.end, turn.end)
         previous.segmentIDs += turn.segmentIDs
         previous.revision += 1
@@ -172,6 +173,16 @@ nonisolated struct TranscriptTurnAssembler: Sendable {
         turns[index - 1] = previous
         turns.remove(at: index)
         return previous
+    }
+
+    static func joinClause(_ sentence: String, _ clause: String) -> String {
+        let head = sentence.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: ".,;: "))
+        var tail = clause.trimmingCharacters(in: .whitespaces)
+        // Lower-case the qualifier's first letter unless it is a name or acronym ("Especially" → "especially", "RLS" stays).
+        if let first = tail.first, first.isUppercase, tail.dropFirst().first?.isLowercase == true {
+            tail = first.lowercased() + tail.dropFirst()
+        }
+        return head + ", " + tail
     }
 
     /// Recognizer restart: provisional text is discarded; emitted turns and IDs are kept.
@@ -185,11 +196,22 @@ nonisolated struct TranscriptTurnAssembler: Sendable {
                                                "like", "so", "is", "are", "in", "on", "if", "because", "your", "my", "how", "what",
                                                "um", "uh", "called", "named", "regarding", "using", "into", "from"]
 
-    /// Ends mid-phrase ("Can you talk about?", "Tell me about your"), whatever the punctuation.
+    /// Qualifiers that always introduce more ("…especially", "…such as").
+    static let qualifierEndings: Set<String> = ["especially", "particularly", "including", "such", "namely", "specifically", "versus",
+                                                "vs", "via", "plus", "whether", "whereas", "unless"]
+    /// Words that end a finished sentence too ("…explain that.") and only dangle without terminal punctuation.
+    static let openEndings: Set<String> = ["that", "when", "where", "while", "which", "who", "whose", "than", "as", "also", "then",
+                                           "both", "either", "since", "given", "considering", "assuming"]
+
+    /// Ends mid-phrase ("Can you talk about?", "Tell me about your", "…using Supabase and PostgreSQL RLS,").
     static func isIncomplete(_ text: String) -> Bool {
-        let words = text.lowercased().split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'") })
-        guard let last = words.last else { return false }
-        return danglingEndings.contains(String(last))
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A clause cut at a comma, colon, semicolon or dash is unfinished whatever its words.
+        if let end = trimmed.last, ",;:-\u{2014}\u{2013}".contains(end) { return true }
+        let words = trimmed.lowercased().split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'") })
+        guard let last = words.last.map(String.init) else { return false }
+        if danglingEndings.contains(last) || qualifierEndings.contains(last) { return true }
+        return openEndings.contains(last) && !(trimmed.last.map { ".?!".contains($0) } ?? false)
     }
 
     /// A short continuation (a name or phrase), not a question of its own.

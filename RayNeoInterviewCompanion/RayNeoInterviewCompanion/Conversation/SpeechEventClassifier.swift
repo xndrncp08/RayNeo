@@ -113,8 +113,12 @@ nonisolated enum SpeechEventClassifier {
                 return result(.clarification, 0.65 + 0.25 * min(1, question.score + related), "clarification phrasing")
             }
             let cue = starts(followUpStarts) || question.isFollowUp
-            let refers = words.contains { anaphora.contains($0) } && question.score >= 0.4
-            if cue || refers || (related >= 0.25 && question.score >= questionThreshold) {
+            // A fully specified request ("Explain how you'd secure a Next.js app with Supabase Auth and RLS…") is a
+            // new question even when it shares the topic's words; only short or referring requests continue it.
+            let ownSubject = TextSimilarity.contentWords(text).filter { !requestFiller.contains($0.lowercased()) }.count
+            let selfContained = ownSubject >= 5 && !ContextReference.detect(text).refersBack
+            let refers = !selfContained && words.contains { anaphora.contains($0) } && question.score >= 0.4
+            if cue || refers || (!selfContained && related >= 0.25 && question.score >= questionThreshold) {
                 let confidence = 0.45 + (cue ? 0.25 : 0) + (refers ? 0.1 : 0) + 0.2 * related + 0.2 * question.score
                 return result(.followUp, confidence, [cue ? "follow-up phrasing" : nil, refers ? "refers back" : nil,
                                                       related >= 0.25 ? String(format: "related %.2f", related) : nil].compactMap { $0 }.joined(separator: ", "))

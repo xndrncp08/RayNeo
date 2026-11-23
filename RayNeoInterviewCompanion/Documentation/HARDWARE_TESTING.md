@@ -396,3 +396,12 @@ Needs a MacBook with VS Code, the iPhone running RayPrompt, and the RayNeo iO.
 5. **Echo and interruption:** read the displayed answer aloud. The transcript labels it "Reading the answer" and no new answer starts.
    - Then read one sentence and ask "Sorry, what happens if the queue goes down?" in the same breath: only the question is answered.
 6. **Legacy recognizer:** on a device without SpeechAnalyzer, repeat step 1 and check the transcript has no repeated clauses.
+
+## U. Question finished after a pause
+
+1. Say "Explain how you'd secure a Next.js application using Supabase Authentication and PostgreSQL RLS", pause about 2 s, then say "especially when students, instructors, and administrators have different access permissions."
+   - The transcript shows one turn (revision 1).
+   - No answer to the first half appears on the glasses while you are still speaking.
+   - The displayed answer covers each role separately (student ownership, instructor course assignments, administrator rights), RLS enforcement, and authorization testing.
+2. Repeat without the pause: one turn, one generation, no hold delay.
+3. After that answer, ask "How does PostgreSQL row level security work in Supabase?": a new question, not a follow-up. Then "What about the admin dashboard?": a follow-up.

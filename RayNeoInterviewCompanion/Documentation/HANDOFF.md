@@ -515,3 +515,21 @@ Real Gemini/RayNeo timings need the device.
 - Incident request prompt: 295 characters (PostgreSQL notes, no incidents) → 1,963 characters (the scenario, three numbered incidents, reference resolution, troubleshooting structure, three parts).
 
 No live Gemini or device measurements yet.
+
+## Update 2026-11-22 (u): finalized question revisions and answer relevance
+
+**Root cause.** The device report reproduces deterministically. SpeechAnalyzer finalizes "…using Supabase Authentication and PostgreSQL RLS" and "especially when students, instructors, and administrators have different access permissions." as two segments.
+- After the 1.2 s endpoint, the first half was a complete turn: a trailing comma didn't count as unfinished. It was answered and the answer locked.
+- The second half became its own turn, classified as "Not a question" (classic mode) or "General conversation" (continuous mode). It never reached the answer.
+- No requirement was extracted from "especially when…", so validation had nothing to check.
+
+**Fixes**
+- *Unfinished clauses:* `isIncomplete` counts a trailing comma, colon, semicolon or dash; qualifier endings ("especially", "such"…); and open endings ("that", "when"…) without terminal punctuation. These turns wait silence + grace.
+- *Continuations:* `InterviewIntent.isQualifierClause` lets "especially / including / where / when…" clauses continue the previous request. They're joined as a clause ("…RLS, especially when…").
+- *Engine revisions:* a revision of a turn whose answer is active or generating is regenerated as the same request, with the kind and context of its first version.
+  - It is never a follow-up to its own partial answer.
+  - It is never undone back to that partial answer.
+  - A non-material revision updates the active question's wording.
+- *Display hold:* while the interviewer is still speaking within `continuationGap` of the turn, no early frame is shown, and a finished answer waits up to 3 s. A revision cancels it during the wait; if nobody keeps speaking, there is no delay.
+- *Follow-ups:* a self-contained request (five or more subject words, no back-reference) is a new question even when it shares the topic's words. Detector follow-up cues inside long questions are ignored.
+- *Validation:* requirements now come from qualifier clauses too. Enumerated items ("students, instructors, and administrators") must each be explained in a clause of their own; a list mention doesn't count. Role-based security questions get per-role guidance (ownership, assignments, admin rights, RLS enforcement, server-held keys) and must say how authorization is tested.
