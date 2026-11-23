@@ -36,13 +36,24 @@ struct KnowledgeDocument: Codable, Equatable, Sendable {
 
     /// Top matching topic notes for a question, bounded for the model's context window.
     func notes(for question: String, limit: Int = 2, maximumCharacters: Int = 600) -> [String] {
-        let lower = question.lowercased()
+        let lower = " " + question.lowercased() + " "
         return document.topics
-            .map { topic in (topic, topic.keywords.filter { lower.contains($0) }.count) }
+            .map { topic in (topic, topic.keywords.filter { Self.matches($0, in: lower) }.count) }
             .filter { $0.1 > 0 }
             .sorted { $0.1 > $1.1 }
             .prefix(limit)
             .map { "\($0.0.title): \(String($0.0.notes.prefix(maximumCharacters)))" }
+    }
+
+    /// Request verbs never select a topic: "Explain how you prioritise these incidents" is not about
+    /// PostgreSQL's EXPLAIN. Keywords match whole words ("api" is not in "rapid").
+    nonisolated static let requestVerbs: Set<String> = ["explain", "describe", "compare", "design", "implement", "build", "test", "handle", "show"]
+
+    nonisolated static func matches(_ keyword: String, in paddedLower: String) -> Bool {
+        let keyword = keyword.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !keyword.isEmpty, !requestVerbs.contains(keyword) else { return false }
+        let escaped = NSRegularExpression.escapedPattern(for: keyword)
+        return paddedLower.range(of: "(?<![a-z0-9])" + escaped + "(?![a-z0-9])", options: .regularExpression) != nil
     }
 
     func resetToDefaults() { document.topics = Self.defaultTopics }
@@ -133,21 +144,27 @@ enum InterviewPromptBuilder {
         case .technical, .math, .ambiguous:
             style = """
             \(persona)
-            Answer in complete, natural spoken sentences that are easy to say aloud: \(length.sentences). Prioritise substance over sentence count.
+            Answer in complete, natural spoken sentences that are easy to say aloud. Follow the structure and length guidance given with the request; without it, use \(length.sentences). Prioritise substance over sentence count: answer the actual task first and cover every requirement the interviewer stated. Don't force numbered steps into a spoken answer.
             \(styleExample)
             """
         }
         return [shared, style, experience].joined(separator: "\n")
     }
 
-    static func prompt(question: String, followUpTo previous: (question: String, answer: String)?, notes: [String]) -> String {
+    static func prompt(question: String, followUpTo previous: (question: String, answer: String)?, notes: [String],
+                       guidance: String? = nil) -> String {
         var parts: [String] = []
         if !notes.isEmpty { parts.append("Reference notes:\n" + notes.joined(separator: "\n")) }
         if let previous {
-            parts.append("Previous question: \(previous.question.prefix(300))\nPrevious answer: \(previous.answer.prefix(600))")
+            // Context notes may already carry the previous exchange: it is sent once.
+            let sent = notes.joined(separator: "\n")
+            let lines = [sent.contains(previous.question.prefix(80)) ? nil : "Previous question: \(previous.question.prefix(300))",
+                         sent.contains(previous.answer.prefix(80)) ? nil : "Previous answer: \(previous.answer.prefix(600))"].compactMap { $0 }
+            if !lines.isEmpty { parts.append(lines.joined(separator: "\n")) }
             parts.append("This is a follow-up: answer only the new point, in the same context, without repeating the previous answer.")
         }
-        parts.append("Interviewer: \(question.prefix(600))\nYour spoken answer:")
+        if let guidance { parts.append("How to answer this request (plan internally; don't label the parts):\n" + guidance) }
+        parts.append("Interviewer: \(question.prefix(900))\nYour spoken answer:")
         return parts.joined(separator: "\n\n")
     }
 }

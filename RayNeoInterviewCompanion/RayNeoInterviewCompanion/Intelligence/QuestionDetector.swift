@@ -20,7 +20,9 @@ nonisolated struct QuestionDetector: Sendable {
         "is", "are", "in", "on", "if", "because", "your", "my", "how", "what", "um", "uh",
     ]
     private static let followUpCues = ["and what about", "what about", "how about", "why is that", "why would", "can you elaborate",
-                                       "could you elaborate", "go deeper", "follow up", "what if", "and how", "and why", "then what"]
+                                       "could you elaborate", "go deeper", "follow up", "what if", "and how", "and why", "then what",
+                                       "what happens if", "what happens when", "what would happen", "would your approach", "would that change",
+                                       "what happens next", "explain the trade-offs", "how would you prioritize them", "how would you prioritise them"]
 
     func analyze(_ raw: String, previousQuestion: String? = nil) -> InterviewQuestion {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -34,6 +36,10 @@ nonisolated struct QuestionDetector: Sendable {
         if let last = words.last, Self.danglingEndings.contains(last), !text.hasSuffix("?") {
             return result(0, "incomplete (ends with '\(last)')")
         }
+
+        // Intent, not punctuation: imperatives and problem scenarios are requests; logistics never are.
+        let intent = InterviewIntent.classify(text, hasContext: previousQuestion != nil)
+        if intent.kind == .smallTalk { return result(0.1, "small talk / logistics") }
 
         var score = 0.0
         var reasons: [String] = []
@@ -54,6 +60,10 @@ nonisolated struct QuestionDetector: Sendable {
         if words.contains("you") || words.contains("your") { score += 0.05 }
         if technicalKeywords.contains(where: { lower.contains($0) }) { score += 0.1; reasons.append("technical topic") }
         if text.hasSuffix(".") || text.hasSuffix("?") { score += 0.05 }
+        if intent.actionable, intent.confidence > score {
+            score = intent.confidence
+            reasons.append("actionable intent: \(intent.kind.label) (\(intent.reason))")
+        }
         return result(score, reasons.isEmpty ? "no question cues" : reasons.joined(separator: ", "))
     }
 

@@ -40,6 +40,11 @@ struct FilterCounters: Equatable, Sendable {
     var onAnswerDisplayed: (InterviewQuestion, InterviewAnswer) -> Void = { _, _ in }
     /// Called when an automatic transition is undone.
     var onAnswerUndone: (InterviewAnswer) -> Void = { _ in }
+    /// Every turn judged to be interviewer speech (not an answer echo, not the calibrated wearer voice),
+    /// whether or not it asks for an answer: scenario statements are context for later requests.
+    var onInterviewerTurn: (_ text: String, _ turnID: Int?) -> Void = { _, _ in }
+    /// Who the last turn was attributed to, for the transcript ("Interviewer", "Reading the answer", …).
+    private(set) var lastTurnRole: String?
 
     // MARK: Automatic question handoff
 
@@ -148,9 +153,35 @@ struct FilterCounters: Equatable, Sendable {
         }
     }
 
+    /// The displayed answer, its code (spoken code is never a question) and what is streaming now.
+    private var echoReference: String {
+        [currentAnswer?.text, currentAnswer?.walkthrough?.finalCode ?? currentAnswer?.snippet?.code,
+         streamingText.isEmpty ? nil : streamingText].compactMap { $0 }.joined(separator: " ")
+    }
+
+    /// How much of `text` repeats the displayed or streaming answer (0...1).
+    func echoOverlap(_ text: String) -> Double {
+        let reference = echoReference
+        return reference.isEmpty ? 0 : TextSimilarity.containment(text, in: reference)
+    }
+
+    /// A turn that is mostly the answer read aloud can still end with a genuine interruption ("…so I'd use a
+    /// durable queue. Sorry, what happens if the queue itself goes down?"). Returns the sentences that are not
+    /// echo when they form a request of their own; nil when the whole turn is echo. Text overlap is a
+    /// heuristic, not speaker identification.
+    static func interruption(in text: String, reference: String, threshold: Double) -> String? {
+        let sentences = InterviewIntent.sentences(text)
+        guard sentences.count >= 2 else { return nil }
+        let kept = sentences.filter { TextSimilarity.containment($0, in: reference) < threshold }
+        guard !kept.isEmpty, kept.count < sentences.count else { return nil }
+        let remainder = kept.joined(separator: " ")
+        return InterviewIntent.classify(remainder).actionable ? remainder : nil
+    }
+
     private func process(_ turn: CompletedTurn) async {
-        let text = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        lastTurnRole = nil
         let started = now()
         currentTurnID = turn.turnID
         currentTurnIsRevision = turn.isRevision
@@ -171,18 +202,22 @@ struct FilterCounters: Equatable, Sendable {
         }
 
         var question = classifier.analyze(text, previousQuestion: currentQuestion?.text)
-        if settings.continuousConversation { return await handleContinuous(text, question: question, speaker: turn.speaker) }
+        if settings.continuousConversation { return await handleContinuous(text, question: question, speaker: turn.speaker, turnID: turn.turnID) }
 
         // 1. The wearer reading the displayed (or in-progress) answer aloud.
-        // The displayed answer, its code (spoken code is never a question) and what is streaming now.
-        let reference = [currentAnswer?.text, currentAnswer?.walkthrough?.finalCode ?? currentAnswer?.snippet?.code,
-                         streamingText.isEmpty ? nil : streamingText].compactMap { $0 }.joined(separator: " ")
+        let reference = echoReference
         if !reference.isEmpty {
+            if let remainder = Self.interruption(in: text, reference: reference, threshold: settings.echoThreshold) {
+                note("Answer echo removed; the rest of the turn is kept as an interviewer interruption", quoting: remainder)
+                text = remainder
+                question = classifier.analyze(text, previousQuestion: currentQuestion?.text)
+            }
             let overlap = TextSimilarity.containment(text, in: reference)
             // A clearly question-shaped turn needs much stronger overlap before it is called an echo.
             let threshold = question.score >= settings.autoAdvanceMinScore ? min(settings.echoThreshold + 0.25, 0.95) : settings.echoThreshold
             if overlap >= threshold {
                 counters.echo += 1
+                lastTurnRole = "Reading the answer"
                 return note(String(format: "Ignored (matches displayed answer %.2f)", overlap), quoting: text)
             }
         }
@@ -190,8 +225,11 @@ struct FilterCounters: Equatable, Sendable {
         // 2. Calibrated wearer voice.
         if settings.speakerFilterEnabled, turn.speaker.label == .wearer {
             counters.wearer += 1
+            lastTurnRole = "Your voice"
             return note("Ignored (wearer voice: \(turn.speaker.reason))", quoting: text)
         }
+        lastTurnRole = InterviewIntent.isFirstPerson(text) ? "You (likely)" : "Interviewer"
+        onInterviewerTurn(text, turn.turnID)
 
         guard settings.autoQuestionDetection else { return }
 
@@ -248,12 +286,17 @@ struct FilterCounters: Equatable, Sendable {
     /// Continuous conversation: every turn is classified in the context of the active discussion.
     /// High confidence answers (and transitions) automatically; medium prepares the answer but keeps the
     /// current frame; low never touches the display.
-    private func handleContinuous(_ text: String, question: InterviewQuestion, speaker: SpeakerEvidence) async {
-        // The displayed answer, its code (spoken code is never a question) and what is streaming now.
-        let reference = [currentAnswer?.text, currentAnswer?.walkthrough?.finalCode ?? currentAnswer?.snippet?.code,
-                         streamingText.isEmpty ? nil : streamingText].compactMap { $0 }.joined(separator: " ")
-        let overlap = reference.isEmpty ? 0 : TextSimilarity.containment(text, in: reference)
+    private func handleContinuous(_ heard: String, question heardQuestion: InterviewQuestion, speaker: SpeakerEvidence, turnID: Int?) async {
+        var text = heard, question = heardQuestion
+        let reference = echoReference
+        var overlap = reference.isEmpty ? 0 : TextSimilarity.containment(text, in: reference)
         let echoThreshold = question.score >= settings.autoAdvanceMinScore ? min(settings.echoThreshold + 0.25, 0.95) : settings.echoThreshold
+        if !reference.isEmpty, let remainder = Self.interruption(in: text, reference: reference, threshold: settings.echoThreshold) {
+            note("Answer echo removed; the rest of the turn is kept as an interviewer interruption", quoting: remainder)
+            text = remainder
+            question = classifier.analyze(text, previousQuestion: currentQuestion?.text)
+            overlap = TextSimilarity.containment(text, in: reference)
+        }
         let topic = [topicText(), currentQuestion?.text ?? "", currentAnswer?.text ?? ""].joined(separator: " ")
         let speakerLabel = settings.speakerFilterEnabled ? speaker.label : .unknown
         let event = SpeechEventClassifier.classify(text, question: question, echoOverlap: overlap, echoThreshold: echoThreshold,
@@ -263,10 +306,12 @@ struct FilterCounters: Equatable, Sendable {
         note(String(format: "Speech event: %@, %@ confidence %.2f (%@), speaker %@", event.kind.label, event.tier.rawValue,
                     event.confidence, event.reason, speakerLabel.rawValue), quoting: text)
         switch event.kind {
-        case .readingAnswer: counters.echo += 1; return
-        case .userResponse: counters.wearer += 1; return
+        case .readingAnswer: counters.echo += 1; lastTurnRole = "Reading the answer"; return
+        case .userResponse: counters.wearer += 1; lastTurnRole = "Your voice"; return
         default: break
         }
+        lastTurnRole = "Interviewer"
+        onInterviewerTurn(text, turnID)
         guard event.kind.wantsAnswer, event.tier != .low else { counters.notQuestion += 1; return }
         // Later related evidence (the question repeated or rephrased) confirms a prepared answer.
         if let prepared = preparedAnswer, Self.related(prepared.question.text, text) {
@@ -404,10 +449,12 @@ struct FilterCounters: Equatable, Sendable {
         earlyFrameSeconds = nil
         firstFrameSubmitted = nil
         let key = TextSimilarity.normalized(question.text) + "|" + settings.answerLength.rawValue
+        // "What if it fails?" means something different in every scenario: never answered from the cache.
+        let contextual = previous != nil || ContextReference.detect(question.text).refersBack
         do {
             let output: AnswerPipeline.Output
             var fromCache = false
-            if settings.cacheAnswers, let cached = cache[key] {
+            if settings.cacheAnswers, !contextual, let cached = cache[key] {
                 output = cached
                 fromCache = true
             } else {
@@ -433,7 +480,7 @@ struct FilterCounters: Equatable, Sendable {
             }
             guard !output.text.isEmpty else { throw AIError.emptyAnswer }
             // Only validated model answers are cached; clarifications, math and fallbacks are cheap or must not stick.
-            if settings.cacheAnswers, !fromCache, output.validation == "passed" {
+            if settings.cacheAnswers, !fromCache, !contextual, output.validation == "passed" {
                 if cache.count > 200 { cache.removeAll() }
                 cache[key] = output
             }

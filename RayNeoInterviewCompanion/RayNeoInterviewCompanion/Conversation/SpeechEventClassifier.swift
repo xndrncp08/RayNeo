@@ -122,7 +122,7 @@ nonisolated enum SpeechEventClassifier {
         }
         if question.score >= questionThreshold {
             // A request phrased as an instruction from its first word ("Tell me about…") is unambiguous.
-            let instruction = question.reason.contains("request phrased as instruction")
+            let instruction = question.reason.contains("request phrased as instruction") || question.reason.contains("actionable intent")
             return result(.newQuestion, instruction ? max(question.score, 0.8) : question.score, question.reason)
         }
         if question.score >= questionThreshold - 0.2 { return result(.uncertain, question.score, "borderline question (\(question.reason))") }

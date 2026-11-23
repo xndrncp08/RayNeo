@@ -382,3 +382,17 @@ Needs a MacBook with VS Code, the iPhone running RayPrompt, and the RayNeo iO.
 9. **Glasses reconnection:** turn the glasses off and on. The current walkthrough block (or explicit help) comes back; a 20-second preview does not.
 10. **No interruptions:** while reading an explanation aloud, edit, save and scroll in VS Code. The teleprompter must not change.
 11. **Revocation:** Forget on the iPhone. VS Code shows "unpaired" on its next reconnect.
+
+## T. Intent detection, long prompts and interview context (iPhone; glasses optional)
+
+1. **Instruction without a question mark:** say "Design a background job processing system for sending enrolment confirmation emails. The application must handle thousands of submissions, temporary email provider outages, duplicate requests, and worker crashes without losing jobs."
+   - Expect one answer, one transcript entry, and all four constraints addressed.
+   - Diagnostics: intent "system design", 5 requirements.
+2. **Pause mid-prompt:** pause about 2 s after the first sentence. The transcript should still show one turn (revision 1), with the answer regenerated once with the constraints.
+3. **Scenario then question:** say the three-incident scenario, then wait ~5 s and say "Explain how you prioritize these incidents, investigate them, and communicate with affected staff."
+   - The answer must name the classroom outage, the Microsoft 365 sign-in and the Salesforce leads.
+   - Then ask "What about the second one?" and "Compare REST and GraphQL." (the second must not mention the incidents).
+4. **Logistics:** "Okay, I'm just opening the project now." is transcribed, but no answer is generated and the current answer is unchanged.
+5. **Echo and interruption:** read the displayed answer aloud. The transcript labels it "Reading the answer" and no new answer starts.
+   - Then read one sentence and ask "Sorry, what happens if the queue goes down?" in the same breath: only the question is answered.
+6. **Legacy recognizer:** on a device without SpeechAnalyzer, repeat step 1 and check the transcript has no repeated clauses.

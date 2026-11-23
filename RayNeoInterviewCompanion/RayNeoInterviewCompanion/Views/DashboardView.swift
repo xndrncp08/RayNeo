@@ -256,7 +256,10 @@ struct TranscriptView: View {
         }
         ForEach(turns) { turn in
             VStack(alignment: .leading, spacing: 2) {
-                Text(turn.normalized).font(.callout)
+                if let role = turn.role, role != "Interviewer" {
+                    Text(role).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                Text(turn.normalized).font(.callout).foregroundStyle(turn.role == nil || turn.role == "Interviewer" ? .primary : .secondary)
                 if model.settings.transcriptDebug {
                     Text("#\(turn.id) rev \(turn.revision) · raw: \(turn.original)").font(.caption2.monospaced()).foregroundStyle(.secondary)
                 }

@@ -483,3 +483,35 @@ Real Gemini/RayNeo timings need the device.
 **Tests:** 390 in 74 suites (three runs) and 6 Node tests pass. Clean builds; analysis clean.
 
 **Not verified on hardware or a real network:** pairing, reconnection, Bonjour, latency, and the extension in a real VS Code.
+
+## Update 2026-11-22 (t): interview intent, long prompts, context awareness
+
+**Root causes found**
+1. **Imperatives never triggered an answer.** "Design a background job…" scored 0.05, below the 0.5 threshold and even below the 0.25 band where the on-device semantic check runs.
+2. **Duplicated or lost transcript text.** A restarted recognizer repeats the previous result's tail ("…submissions, tem" + "The application must handle thousands of submissions, temporary…"), and the segments were joined verbatim. An overlapping correction replaced a longer pending segment wholesale.
+3. **Incomplete answers.** The prompt carried no per-request structure and no list of the interviewer's constraints.
+4. **Context missing from Gemini requests:**
+   - Interviewer statements that weren't questions were dropped.
+   - With Gemini, conversation history was gated together with personal memory under one toggle (off by default).
+   - Knowledge-base keywords matched as substrings: "explain" in the PostgreSQL topic (`EXPLAIN ANALYZE`) attached PostgreSQL notes to every "Explain…" request. This is the reported "these incidents" → PostgreSQL answer.
+   - "What happens if…" wasn't a follow-up cue.
+   - The answer cache ignored follow-up context.
+
+**What changed**
+
+| Area | Change |
+|---|---|
+| Intent (`Intelligence/InterviewIntent.swift`) | `InterviewIntent`: kinds, requirements, parts, prompt guidance, length and token budget per kind, a deterministic completeness check (at most one targeted regeneration), continuations. `QuestionDetector` takes the intent's confidence and caps small talk at 0.1. |
+| Assembler (`TranscriptTurnAssembler`) | `stitch` / `revise` / `overlapLength` / `contains`; scenario endpoint `scenarioSilence` (2.4 s); `absorb` folds a continuation turn into the previous one, in `AppModel.process`, gated by `settings.continuationGap` (3 s). `TranscriptBuffer` merges progressive finals. |
+| Context (`Conversation/InterviewContext.swift`) | `InterviewContext`: statements in the current topic, incidents, constraints, topic expiry (explicit cue, unrelated request, 10 min). `ContextReference` resolves these / those / the second one / implicit references. Recorded through `engine.onInterviewerTurn` after echo and wearer filtering. |
+| Engine | Answers read aloud are stripped sentence by sentence, so an interviewer interruption inside one turn survives. Each turn gets a transcript role label. Contextual requests skip the cache. |
+| Prompt | Notes now carry the scenario note, Q&A from the current topic only (superseded and duplicate entries removed), and the previous exchange sent once. Request guidance sits in the prompt; the system instructions stay stable. |
+| Settings | `geminiIncludeInterviewContext` (default on). `geminiIncludePortfolio` now covers personal memory only. |
+
+**Measured (simulator, deterministic mock provider)**
+- Actionable prompts dispatched: 8/11 before, 11/11 after.
+- False positives: "Give me a second." was answered before, none after.
+- Classification cost: 26 µs → 191 µs per utterance.
+- Incident request prompt: 295 characters (PostgreSQL notes, no incidents) → 1,963 characters (the scenario, three numbered incidents, reference resolution, troubleshooting structure, three parts).
+
+No live Gemini or device measurements yet.

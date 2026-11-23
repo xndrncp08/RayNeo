@@ -196,7 +196,10 @@ struct GeminiSettingsSection: View {
                     ForEach(GeminiModel.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }
                 Toggle("If Gemini fails, answer on-device (Apple)", isOn: $model.settings.geminiFallbackToApple)
-                Toggle("Share memory & conversation context with Gemini", isOn: $model.settings.geminiIncludePortfolio)
+                Toggle("Share personal memory & portfolio with Gemini", isOn: $model.settings.geminiIncludePortfolio)
+                Toggle("Send this interview's earlier context with each question", isOn: $model.settings.geminiIncludeInterviewContext)
+                Text("What the interviewer said earlier in this session, so \"these incidents\" or \"the second one\" can be understood. Kept in memory only for the session.")
+                    .font(.caption2).foregroundStyle(.secondary)
                 Button("Test Gemini Connection") {
                     Task {
                         verifyResult = "Testing \(model.settings.geminiModel)…"

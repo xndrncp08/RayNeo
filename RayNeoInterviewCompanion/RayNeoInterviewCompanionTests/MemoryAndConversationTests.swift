@@ -230,7 +230,10 @@ import Testing
         let notes = model.notes(for: "What about security?").joined(separator: "\n")
         #expect(notes.contains("Diskarte"))
         #expect(notes.contains("Conversation so far"))
-        model.settings.aiModel = .geminiFlash // context sharing is off by default
+        model.settings.aiModel = .geminiFlash
+        // This interview's context is sent by default (so references can be resolved); personal memory is not.
+        #expect(model.notes(for: "What about security?").joined(separator: "\n").contains("Conversation so far"))
+        model.settings.geminiIncludeInterviewContext = false
         let cloud = model.notes(for: "What about security?").joined(separator: "\n")
         #expect(!cloud.contains("Diskarte") && !cloud.contains("Conversation so far"))
         #expect(!model.engine.instructionsProvider(.technical).contains("SAIT"))

@@ -211,6 +211,12 @@ struct Diagnostics: Equatable {
         snippets.onCodeStep = { [unowned self] blockID, language, structures in
             self.editor.expect(blockID: blockID, language: language, structures: structures)
         }
+        engine.onInterviewerTurn = { [unowned self] text, turnID in
+            guard let turnID else { return }
+            let decision = self.conversation.recordInterviewer(text, turnID: turnID)
+            let context = self.conversation.interview
+            DiagnosticLog.shared.record(.pipeline, "Interview context: \(decision) · \(context.statements.count) statement(s), \(context.incidents.count) incident(s), \(context.constraints.count) constraint(s)")
+        }
         editorAssistant = EditorAssistant(presenter: presenter, snippets: snippets)
         editorAssistant.isSpeaking = { [unowned self] in !self.volatileText.isEmpty }
         editorAssistant.codeLayout = { [unowned self] in self.snippets.effectiveCodeLayout }
@@ -623,9 +629,18 @@ struct Diagnostics: Equatable {
 
     /// A finalized (or revised) utterance: normalise project names, update the coding task, then classify.
     private func process(_ output: AssemblerOutput) async {
-        let (turn, isRevision): (ConversationTurn, Bool) = switch output {
+        var (turn, isRevision): (ConversationTurn, Bool) = switch output {
         case .turn(let turn): (turn, false)
         case .revised(let turn): (turn, true)
+        }
+        // "Design a job system…" [pause] "The application must handle worker crashes…" is one request: the
+        // continuation is folded into the previous turn, which is re-evaluated with every constraint.
+        if !isRevision, assembler.turns.count >= 2, let previous = assembler.turns.dropLast().last,
+           turn.start - previous.end <= settings.continuationGap, engine.echoOverlap(turn.text) < settings.echoThreshold,
+           InterviewIntent.isContinuation(turn.text, of: previous.text), let merged = assembler.absorb(turn) {
+            DiagnosticLog.shared.record(.pipeline, "Turn #\(turn.id) continues turn #\(merged.id): merged into one request (revision \(merged.revision))")
+            turn = merged
+            isRevision = true
         }
         let normalized = normalize(turn.text)
         // "Next step" / "go back" during a walkthrough navigate; they are never questions.
@@ -651,6 +666,7 @@ struct Diagnostics: Equatable {
         completed.speaker = speaker.evidence(start: turn.start, end: turn.end, profile: settings.wearerProfile,
                                             pitchTolerance: settings.wearerPitchTolerance)
         await engine.handle(completed)
+        if let index = finalizedTurns.firstIndex(where: { $0.id == turn.id }) { finalizedTurns[index].role = engine.lastTurnRole }
     }
 
     /// Project names from personal memory, recognised in speech (original text is kept for debugging).
@@ -740,11 +756,13 @@ struct Diagnostics: Equatable {
 
     /// Prompt notes: knowledge-base topics, then (when allowed) retrieved personal memory and the
     /// conversation so far, each within a fixed budget.
+    var interviewContextAllowed: Bool { settings.aiModel != .geminiFlash || settings.geminiIncludeInterviewContext }
+
     func notes(for question: String) -> [String] {
         // Bounded prompt: smaller budgets keep the first token fast; only what is relevant is included.
         var notes = knowledge.notes(for: question, limit: 2, maximumCharacters: 400)
-        guard personalContextAllowed else { lastMemoryReferences = []; return notes }
-        if settings.personalMemoryEnabled {
+        lastMemoryReferences = []
+        if personalContextAllowed, settings.personalMemoryEnabled {
             let retrieval = memory.retrieve(question, topicProject: conversation.project, budget: 700)
             if !retrieval.entries.isEmpty { notes = Array(notes.prefix(1)) } // your memory beats generic topic notes
             lastMemoryReferences = retrieval.references
@@ -753,7 +771,12 @@ struct Diagnostics: Equatable {
                 DiagnosticLog.shared.record(.pipeline, "Memory retrieved: \(retrieval.references.count) reference(s): \(retrieval.references.joined(separator: ", "))")
             }
         }
-        let context = conversation.context(budget: 550)
+        guard interviewContextAllowed else { return notes }
+        // The scenario the interviewer described (even statements that were not questions), then the Q&A of
+        // the current topic only: an unrelated new question gets no stale context.
+        if let scenario = conversation.interview.promptNote(for: question) { notes.append(scenario) }
+        let context = conversation.context(budget: 550, since: conversation.interview.topicStartedAt, request: question,
+                                           statements: conversation.interview.statements.map(\.text))
         if !context.isEmpty { notes.append("Conversation so far (resolve \"that\", \"it\" and follow-ups against this):\n\(context)") }
         return notes
     }

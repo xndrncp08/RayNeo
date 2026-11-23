@@ -14,8 +14,17 @@ struct TranscriptBuffer: Sendable {
     var characterCount: Int { segments.reduce(0) { $0 + $1.text.count } }
 
     mutating func append(_ segment: TranscriptSegment) {
-        // Recognizers occasionally re-emit an identical final for the same audio; drop it.
-        if let last = segments.last, last.text == segment.text, abs(last.end - segment.end) < 0.5 { return }
+        // Recognizers re-emit a final for the same audio, often a longer version of it, or repeat the tail of the
+        // previous result after a restart: the readable transcript keeps one merged entry, not every version.
+        if let last = segments.last, segment.start - last.end < 2,
+           TranscriptTurnAssembler.contains(last.text, segment.text) || TranscriptTurnAssembler.contains(segment.text, last.text)
+            || TranscriptTurnAssembler.overlapLength(last.text, segment.text) >= 2 {
+            var merged = last
+            merged.text = TranscriptTurnAssembler.revise(last.text, with: segment.text)
+            merged.end = max(last.end, segment.end)
+            segments[segments.count - 1] = merged
+            return
+        }
         segments.append(segment)
         var characters = characterCount
         while segments.count > maximumSegments || characters > maximumCharacters {

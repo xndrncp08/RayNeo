@@ -128,6 +128,8 @@ struct FinalizedTurn: Identifiable, Equatable, Sendable {
     var original: String
     var normalized: String
     var revision: Int
+    /// Who the turn was attributed to ("Interviewer", "Reading the answer", "Your voice"); a heuristic.
+    var role: String? = nil
 }
 
 struct CompletedTurn: Equatable, Sendable {
@@ -265,6 +267,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// Minimum `QuestionDetector` score that counts as a question. Lower = more sensitive.
     var questionThreshold = 0.5
     var endOfTurnSilence = 1.2
+    /// A turn starting within this many seconds of the previous one may complete it ("The application must…").
+    var continuationGap = 3.0
     var autoQuestionDetection = true
     var semanticClassification = true
     var speakerFilterEnabled = true
@@ -307,6 +311,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     var geminiFallbackToApple = true
     /// The portfolio stays on the device unless this is turned on.
     var geminiIncludePortfolio = false
+    /// What the interviewer said earlier in this session (and the previous Q&A) is sent with each Gemini
+    /// request so "these incidents" can be understood. Personal memory stays behind `geminiIncludePortfolio`.
+    var geminiIncludeInterviewContext = true
     /// Show the first complete frame of a streamed answer before generation finishes.
     var earlyFirstFrame = true
     /// Subtle marker after the final sentence of a successfully completed answer (rendered, never in the text).

@@ -49,6 +49,8 @@ import Foundation
     /// Receives the skeleton of the first draft as soon as its block is complete and validated.
     var onSkeleton: (String) -> Void = { _ in }
     private var skeletonReported = false
+    /// What the request asks for (structure, length, explicit requirements), decided once per answer.
+    private var intent = InterviewIntent(kind: .question, confidence: 0, reason: "")
     private var firstSentenceAt: Double?
 
     init(provider: any AIResponseProvider, instructions: @escaping (QuestionCategory) -> String, notes: @escaping (String) -> [String],
@@ -63,6 +65,9 @@ import Foundation
         self.onPartial = onPartial
         self.log = log
     }
+
+    /// The last prompt sent (tests check context propagation; never logged).
+    private(set) var lastPrompt = ""
 
     func answer(_ question: String, previous: (question: String, answer: String)?) async throws -> Output {
         var output = try await produce(question, previous: previous)
@@ -93,7 +98,11 @@ import Foundation
                           routeReason: "code requested for an unknown task", routeMilliseconds: 0, firstTokenSeconds: nil,
                           generationSeconds: nil, validation: "deterministic", regenerated: false, usedModel: false)
         }
+        intent = InterviewIntent.classify(question, hasContext: previous != nil)
+        if intent.kind == .followUp || previous != nil, intent.kind == .question || intent.kind == .explanation { intent.kind = .followUp }
         let routeMilliseconds = now().timeIntervalSince(routeStart) * 1000
+        log(String(format: "Answer #%d intent: %@ (%.2f, %@), %d requirement(s), %d part(s)", answerID, intent.kind.label, intent.confidence,
+                   intent.reason, intent.requirements.count, intent.parts.count))
         log(String(format: "Answer #%d routed as %@ (%@) in %.1f ms", answerID, route.category.rawValue, route.reason, routeMilliseconds))
         if let direct = route.directAnswer {
             return Output(text: direct, category: route.category, routeReason: route.reason, routeMilliseconds: routeMilliseconds,
@@ -168,6 +177,10 @@ import Foundation
         if category == .technical, let repetition = NaturalAnswerStyle.repetitiveOpening(text) {
             return AnswerValidator.Verdict(passed: false, reason: repetition)
         }
+        // Deterministic completeness: every requirement the interviewer stated is at least mentioned.
+        if category == .technical, case let missing = intent.missingRequirements(in: text), !missing.isEmpty {
+            return AnswerValidator.Verdict(passed: false, reason: "did not address the interviewer's requirement(s): \(missing.joined(separator: "; ")); cover each one")
+        }
         return verdict
     }
 
@@ -200,12 +213,15 @@ import Foundation
         let maximumTokens = switch category {
         case .factual: 110
         case .coding: wantsCode ? 520 : 220
-        default: answerLength.maximumTokens
+        default: intent.maximumTokens(answerLength)
         }
+        // Request-specific structure goes in the prompt, so the system instructions stay the same across answers.
+        let guidance = category == .technical || category == .coding && !wantsCode ? intent.guidance(length: answerLength) : nil
         let request = AnswerRequest(instructions: instructionText,
                                     prompt: InterviewPromptBuilder.prompt(question: question, followUpTo: previous,
-                                                                          notes: (context.map { [$0] } ?? []) + notes(question)),
+                                                                          notes: (context.map { [$0] } ?? []) + notes(question), guidance: guidance),
                                     maximumTokens: maximumTokens)
+        lastPrompt = request.prompt
         var text = ""
         log("Answer #\(answerID): provider \(provider.name)\(correction == nil ? "" : " (regeneration)")")
         for try await partial in provider.streamAnswer(request) {
