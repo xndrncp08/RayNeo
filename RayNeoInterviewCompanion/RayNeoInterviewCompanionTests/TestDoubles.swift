@@ -91,3 +91,18 @@ final class TestClock: @unchecked Sendable {
 }
 
 struct TestError: LocalizedError { var errorDescription: String? { "test failure" } }
+
+/// Sentence-level streaming shows the first sentence first and then the completed frame. These helpers
+/// collapse that growth: a caption whose visible words are a prefix of the next one's was superseded.
+enum Streaming {
+    static func visible(_ caption: String) -> String {
+        LensModel.visibleText([caption], rowWidth: 400).joined(separator: " ")
+    }
+
+    /// The captions that were not later grown by appending (one per frame actually shown).
+    static func settled(_ captions: [String]) -> [String] {
+        captions.enumerated().filter { index, caption in
+            index == captions.count - 1 || !(visible(captions[index + 1]).hasPrefix(visible(caption)) && visible(captions[index + 1]) != visible(caption))
+        }.map(\.element)
+    }
+}

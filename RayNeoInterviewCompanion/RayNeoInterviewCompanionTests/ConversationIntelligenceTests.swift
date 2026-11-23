@@ -288,9 +288,14 @@ import Testing
         #expect(!answer.text.contains("haven't written")) // the refusal was rejected and regenerated
         #expect(answer.snippet?.code == "function removeDuplicates(arr) {\n  return [...new Set(arr)];\n}")
         #expect(answer.snippet?.steps.count == 2)
-        // Code Tutor (guided walkthrough): the explanation first, then the code on Next.
+        // Code Tutor (guided walkthrough, Coding Skeleton Mode): skeleton, then the explanation, then the code.
         try? await Task.sleep(for: .milliseconds(80))
         #expect(model.snippets.walkthrough?.answerID == answer.answerID)
+        #expect(model.snippets.currentBlock?.kind == .skeleton)
+        #expect(glasses.shown.last?.contains("function removeDuplicates(arr) {") == true)
+        #expect(glasses.shown.last?.contains("// implementation below") == true)
+        model.snippets.walkthroughNext()
+        try? await Task.sleep(for: .milliseconds(80))
         #expect(LensModel.visibleText([glasses.shown.last!], rowWidth: 60).joined(separator: " ").hasPrefix("Here's how I'd write it"))
         model.snippets.walkthroughNext()
         try? await Task.sleep(for: .milliseconds(80))

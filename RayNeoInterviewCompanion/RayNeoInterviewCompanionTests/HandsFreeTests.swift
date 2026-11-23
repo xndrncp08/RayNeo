@@ -81,27 +81,9 @@ import Testing
     }
 }
 
-// MARK: Editor pairing protocol
+// MARK: Editor structure checks (the pairing protocol is tested in EditorLinkTests)
 
-@Suite struct EditorSessionTests {
-    @Test func pairingNeedsTheHMACAndProgressNeedsPairing() throws {
-        var session = EditorSession(code: "123456", nonce: "n1")
-        _ = session.expect(blockID: "w1-b1", language: "JavaScript", structures: ["function f(arr) {", "return [...new Set(arr)];"])
-        let early = session.receive(Data(#"{"type":"progress","blockID":"w1-b1","present":[true,true]}"#.utf8))
-        #expect(early.close && early.progress == nil)
-
-        var wrong = EditorSession(code: "123456", nonce: "n1")
-        #expect(wrong.receive(try JSONEncoder().encode(EditorMessage(type: "hello", mac: EditorMessage.mac(code: "000000", nonce: "n1")))).close)
-
-        let hello = session.receive(try JSONEncoder().encode(EditorMessage(type: "hello", mac: EditorMessage.mac(code: "123456", nonce: "n1"))))
-        #expect(session.paired && !hello.close)
-        #expect(hello.replies.map(\.type) == ["paired", "expect"]) // the pending step is sent on pairing
-        let report = session.receive(Data(#"{"type":"progress","blockID":"w1-b1","file":"/Users/me/secret/project/dedupe.js","present":[true,false],"errors":0}"#.utf8))
-        #expect(report.progress?.file == "dedupe.js") // only the file name is kept
-        #expect(report.progress?.present == [true, false])
-        #expect(session.receive(Data("not json".utf8)).close)
-    }
-
+@Suite struct EditorStructureTests {
     @Test func structuresPresentAreEvidenceNotProof() {
         #expect(CodeStructures.expected(from: "function f(arr) {\n  return [...new Set(arr)];\n}") == ["function f(arr) {", "return [...new Set(arr)];"])
         #expect(CodeStructures.complete(expected: 2, present: [true, true], errors: 0, mode: .balanced).done)

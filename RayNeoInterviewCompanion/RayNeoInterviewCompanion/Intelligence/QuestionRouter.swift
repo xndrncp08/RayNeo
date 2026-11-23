@@ -86,12 +86,15 @@ nonisolated enum AnswerValidator {
     private static let fakeTesting = [#"\bi (tested|ran|executed) (it|this|the code|that)\b"#, #"\b(has|have) been tested\b"#,
                                       #"\bverified that it works\b"#, #"\bi('ve| have) tested\b"#]
 
-    static func validate(_ answer: String, question: String, category: QuestionCategory, hasPortfolio: Bool) -> Verdict {
+    /// `requireRelevance: false` is used for the first sentences of a streaming answer only: an opening sentence
+    /// often does not repeat the question's nouns; the final answer is always checked with relevance.
+    static func validate(_ answer: String, question: String, category: QuestionCategory, hasPortfolio: Bool,
+                         requireRelevance: Bool = true) -> Verdict {
         let lower = answer.lowercased()
         func hits(_ patterns: [String]) -> Int { patterns.filter { lower.range(of: $0, options: .regularExpression) != nil }.count }
         guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return Verdict(passed: false, reason: "empty answer", useFallback: true) }
         let keyTerms = Set(TextSimilarity.contentWords(question))
-        let relevant = keyTerms.isEmpty || !keyTerms.isDisjoint(with: Set(TextSimilarity.contentWords(answer)))
+        let relevant = !requireRelevance || keyTerms.isEmpty || !keyTerms.isDisjoint(with: Set(TextSimilarity.contentWords(answer)))
         let hedges = hits(nonAnswer)
         if hedges >= 2 || (hedges >= 1 && !relevant) {
             return Verdict(passed: false, reason: "describes how to find an answer instead of answering", useFallback: true)

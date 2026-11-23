@@ -30,7 +30,7 @@ import Testing
         await model.tick(now: Date().addingTimeInterval(5))
         await model.engine.generationTask?.value
         #expect(model.transcript.segments.count == 1)
-        #expect(glasses.shown.count == 1)
+        #expect(Streaming.settled(glasses.shown).count == 1) // first sentence, then the completed frame
         // Default Sentence Frames: the frame's rows show the answer from its first word.
         #expect(LensModel.visibleText(glasses.shown).first?.hasPrefix("First, I would check the API logs") == true)
         #expect(model.presenter.plan?.sections.map(\.text).joined(separator: " ") == ai.answer)

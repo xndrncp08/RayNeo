@@ -49,6 +49,8 @@ nonisolated struct TranscriptTurnAssembler: Sendable {
     var incompleteGrace = 1.5
     /// How long after an incomplete turn a short fragment may still complete it.
     var mergeWindow = 4.0
+    /// Faster endpoint for a finalized, clearly complete question (ends with "?", not mid-phrase).
+    var questionSilence = 0.6
 
     private(set) var live = ""
     private(set) var pending: [RecognizedSegment] = []
@@ -125,7 +127,9 @@ nonisolated struct TranscriptTurnAssembler: Sendable {
     /// Emits the turn once silence (plus grace for an unfinished phrase) has elapsed.
     mutating func tick(now: Date) -> AssemblerOutput? {
         guard hasPendingSpeech, let lastActivity else { return nil }
-        let wait = silence + (Self.isIncomplete(pendingText) ? incompleteGrace : 0)
+        let text = pendingText
+        let completeQuestion = live.isEmpty && text.hasSuffix("?") && !Self.isIncomplete(text)
+        let wait = Self.isIncomplete(text) ? silence + incompleteGrace : (completeQuestion ? min(silence, questionSilence) : silence)
         guard now.timeIntervalSince(lastActivity) >= wait else { return nil }
         let start = pending.first?.start ?? pending.last?.end ?? 0
         let end = pending.map(\.end).max() ?? start

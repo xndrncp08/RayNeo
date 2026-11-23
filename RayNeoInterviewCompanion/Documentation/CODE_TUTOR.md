@@ -130,3 +130,19 @@ Settings › Conversation › **Adaptive Walkthrough**, also switchable on the w
   - **Pages:** wrapped rows of a line stay on one page.
   - **Labels:** a single-page block has no label; a multi-page block shows "(k/N)" on its last row (or on a row of its own if that row is full).
 - The iPhone always shows the full code.
+
+## Coding Skeleton Mode (default on)
+
+- Coding walkthroughs open with a `SKELETON` block: a concise, syntactically correct outline of the final solution.
+  - **Validation:** balanced brackets, the requested language, ≤ 10 lines, and only names the final code keeps.
+  - **Fallback:** if the model omits it, the skeleton is derived from the final code (signature, a body comment, closing line). SQL gets none.
+- **Early display:** when its block is complete while streaming, the skeleton appears on the glasses before the rest of the answer. It waits while you are mid-sentence, and is withdrawn if the answer fails or is cancelled.
+- **Atomic adoption:** the final walkthrough adopts it in one write (skeleton + answer), with no second write and no flash of text.
+- **Lifetime:** like any code step, it stays until Next, "next step", an editor report or an optional timer. Speech and silence never remove it.
+
+## Editor link (see Tools/vscode-code-tutor/README.md)
+
+- **Progress:** code steps advance on a *stable* editor report (no edits for 1.5 s) with every expected line present, the expected names present as symbols, and no errors.
+- **Priority:** explicit help > a confident new question > the walkthrough > editor progress > low-priority diagnostics.
+  - Errors appear briefly on the glasses only on code steps, and never while you are speaking.
+  - Warnings stay on the iPhone. Repeated captions are coalesced.

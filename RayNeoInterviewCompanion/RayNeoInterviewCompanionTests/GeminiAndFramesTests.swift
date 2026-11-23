@@ -290,7 +290,8 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
         await engine.generationTask?.value
         #expect(engine.state == .answerLocked)
-        #expect(glasses.shown == [early]) // completed answer: frame 1 is not rewritten
+        #expect(glasses.shown.first == early)                 // the early frame came first…
+        #expect(Streaming.settled(glasses.shown).count == 1)  // …and only grew by appending (never rewritten)
         #expect(presenter.plan?.answer == engine.currentAnswer?.text) // the full (post-processed) answer
         #expect(presenter.pages.count > 1)
         reading.ingest(firstWords, isFinal: false, speaker: .unknown)

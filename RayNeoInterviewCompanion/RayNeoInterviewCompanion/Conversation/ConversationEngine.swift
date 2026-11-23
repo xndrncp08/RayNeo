@@ -307,8 +307,7 @@ struct FilterCounters: Equatable, Sendable {
         record(.transition)
         let answer = prepared.answer
         Task {
-            let shown = presentation(of: answer)
-            await presenter.present(shown.text, answerID: answer.answerID, endMarker: shown.marker)
+            await display(answer, continuing: false)
             record(.answerShown)
         }
         isLocked = settings.lockAfterDisplay
@@ -414,6 +413,9 @@ struct FilterCounters: Equatable, Sendable {
             } else {
                 earlyFrameShown = false
                 earlyFrameTask = nil
+                earlyFrameSource = ""
+                earlyFrameText = ""
+                earlySkeletonFor = nil
                 let pipeline = AnswerPipeline(
                     provider: ai(), instructions: instructionsProvider, notes: notesProvider, answerLength: settings.answerLength,
                     hasPortfolio: hasPortfolio(), now: now,
@@ -424,6 +426,8 @@ struct FilterCounters: Equatable, Sendable {
                 pipeline.answerID = answerID
                 pipeline.groundingCheck = groundingCheck
                 pipeline.codingResolver = codingResolver
+                pipeline.codingSkeleton = settings.codingSkeleton && settings.codeDisplay == .tutor
+                pipeline.onSkeleton = { [weak self] code in self?.earlySkeleton(code, answerID: answerID) }
                 output = try await pipeline.answer(question.text, previous: previous.map { (question: $0.0, answer: $0.1) })
                 try Task.checkCancellation()
             }
@@ -471,9 +475,7 @@ struct FilterCounters: Equatable, Sendable {
             recordHandoff(.replacementReady)
             if replacing { recordHandoff(.switched) }
             if let turnID = generatingTurnID { turnAnswers[turnID] = answerID }
-            let shown = presentation(of: answer)
-            await presenter.present(shown.text, answerID: answerID, continuingProvisional: earlyFrameShown && shown.text == output.text,
-                                    endMarker: shown.marker)
+            await display(answer, continuing: earlyFrameShown)
             record(.answerShown)
             onAnswerDisplayed(question, answer)
             if firstFrameSubmitted == nil, presenter.lastWrite?.answerID == answerID, presenter.lastWrite?.result.hasPrefix("handed") == true {
@@ -530,38 +532,81 @@ struct FilterCounters: Equatable, Sendable {
         answer.generationComplete ? settings.endMarker.text : nil
     }
     private var earlyFrameShown = false
+    /// Complete-sentence text the current early frame was built from.
+    private var earlyFrameSource = ""
+    private var earlySkeletonFor: Int?
+    /// A validated skeleton of a streaming coding answer (Code Tutor shows it unless the wearer is speaking).
+    var onEarlySkeleton: (Int, String) -> Void = { _, _ in }
+    /// An early skeleton or frame whose answer failed or was cancelled must leave the glasses.
+    var onEarlyContentWithdrawn: (Int) -> Void = { _ in }
+    /// Presents a skeleton-first walkthrough atomically; returns false to fall back to the teleprompter.
+    var presentWalkthrough: ((InterviewAnswer) async -> Bool)?
     private var earlyFrameTask: Task<Void, Never>?
     private var earlyFrameSeconds: Double?
     private var generationStarted: Date?
 
     /// Shows the first frame of a streaming technical/coding answer once it is final: only complete
     /// sentences, no filler, and more text already beyond the frame. Never a partial word.
+    /// Sentence-level streaming: as soon as the first complete sentence passes validation it is shown, and the
+    /// first frame then grows sentence by sentence (appended words only) until the answer completes.
+    /// Coding answers are validated as a whole first: partially streamed code never reaches the glasses.
     private func considerEarlyFrame(_ partial: String, category: QuestionCategory, answerID: Int) {
         // Partials of a superseded generation never reach the lens.
-        // Coding answers are validated as a whole first: partially streamed code never reaches the glasses.
-        guard settings.earlyFirstFrame, !prepareOnly, !earlyFrameShown, answerID == generatingAnswerID,
-              category == .technical else { return }
-        let complete = AnswerFormatter.completeSentences(partial)
+        guard settings.earlyFirstFrame, !prepareOnly, answerID == generatingAnswerID, category == .technical else { return }
+        // The same clean-up as the final answer, so the early frame is a prefix of it.
+        let complete = NaturalAnswerStyle.polish(AnswerFormatter.completeSentences(partial))
+        guard !complete.isEmpty, complete != earlyFrameSource else { return }
         // The early text must already pass the same validation as a final answer (no fake experience, on topic).
-        guard !complete.isEmpty, AnswerValidator.removeFiller(complete, category: category)?.removed == 0,
+        guard AnswerValidator.removeFiller(complete, category: category)?.removed == 0,
               let question = currentQuestion?.text,
-              AnswerValidator.validate(complete, question: question, category: category, hasPortfolio: hasPortfolio()).passed,
-              let frame = presenter.stableFirstFrame(of: complete) else { return }
-        earlyFrameShown = true
+              AnswerValidator.validate(complete, question: question, category: category, hasPortfolio: hasPortfolio(),
+                                       requireRelevance: false).passed,
+              groundingCheck(complete) == nil,
+              let frame = presenter.earlyFrame(of: complete), frame != earlyFrameText,
+              !earlyFrameShown || frame.hasPrefix(earlyFrameText) else { return }
+        // Few Bluetooth writes: after the first sentence, the frame is only updated once it is complete
+        // (the final answer fills it otherwise).
+        if earlyFrameShown, presenter.stableFirstFrame(of: complete) == nil { return }
+        earlyFrameSource = complete
         earlyFrameText = frame
-        earlyFrameSeconds = generationStarted.map { now().timeIntervalSince($0) }
-        note(String(format: "Answer #%d: first frame validated after %.2fs (early, while streaming)", answerID, earlyFrameSeconds ?? 0))
+        let previous = earlyFrameTask
+        if !earlyFrameShown {
+            earlyFrameShown = true
+            earlyFrameSeconds = generationStarted.map { now().timeIntervalSince($0) }
+            note(String(format: "Answer #%d: first sentence validated after %.2fs (early, while streaming)", answerID, earlyFrameSeconds ?? 0))
+        }
         let started = generationStarted
         earlyFrameTask = Task {
+            await previous?.value // growth updates stay in order
             await presenter.presentProvisional(frame, answerID: answerID)
-            if presenter.lastWrite?.answerID == answerID, presenter.lastWrite?.result.hasPrefix("handed") == true, let started {
+            if firstFrameSubmitted == nil, presenter.lastWrite?.answerID == answerID, presenter.lastWrite?.result.hasPrefix("handed") == true, let started {
                 firstFrameSubmitted = now().timeIntervalSince(started)
             }
         }
     }
 
+    /// The skeleton of a still-streaming coding answer, complete and validated: shown right away (the
+    /// glasses side defers it while the wearer is mid-sentence).
+    private func earlySkeleton(_ code: String, answerID: Int) {
+        guard answerID == generatingAnswerID, !prepareOnly, settings.codeDisplay == .tutor else { return }
+        earlySkeletonFor = answerID
+        note(String(format: "Answer #%d: skeleton validated while streaming (%.2fs)", answerID, generationStarted.map { now().timeIntervalSince($0) } ?? 0))
+        onEarlySkeleton(answerID, code)
+    }
+
+    /// How the answer reaches the glasses: a skeleton-first walkthrough is presented by the Code Tutor in one
+    /// write (skeleton + answer); everything else through the teleprompter.
+    private func display(_ answer: InterviewAnswer, continuing: Bool) async {
+        if settings.codeDisplay == .tutor, answer.walkthrough?.blocks.first?.kind == .skeleton, let presentWalkthrough,
+           await presentWalkthrough(answer) { return }
+        let shown = presentation(of: answer)
+        await presenter.present(shown.text, answerID: answer.answerID, continuingProvisional: continuing && shown.text == answer.text,
+                                endMarker: shown.marker)
+    }
+
     /// A failed or cancelled generation must not leave its provisional frame on the lens.
     private func restoreAfterEarlyFrame() async {
+        if let skeleton = earlySkeletonFor { earlySkeletonFor = nil; onEarlyContentWithdrawn(skeleton) }
         guard earlyFrameShown else { return }
         earlyFrameShown = false
         await earlyFrameTask?.value

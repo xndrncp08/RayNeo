@@ -434,3 +434,52 @@ Outgoing strings were already proven correct by tests, and BLE writes are serial
 **Tests:** 359 in 65 suites; three consecutive runs passed. Clean Debug/Release builds have no warnings; static analysis is clean.
 
 **Hardware:** nothing in this update has been verified on the RayNeo. That includes extra code rows and width, and whether the lens preserves leading spaces.
+
+## Update 2026-11-22 (r): natural answers, sentence streaming, Coding Skeleton Mode
+
+**Natural answers**
+- Adaptive length: about 3–5 sentences, 6–9+ for complex topics.
+- `NaturalAnswerStyle.polish`: openers and corporate words. It is prefix-stable, so early frames match the final answer.
+- Answers that repeat the same opening three times are regenerated once.
+- The prompt asks follow-ups to answer the latest question directly.
+
+**Sentence streaming**
+- The first complete sentence is shown as soon as it passes validation (relevance is judged on the final answer only).
+- The first frame then grows by complete sentences only: at most one more write before completion, never changing shown words.
+
+**Skeleton:** `SKELETON` block, validated and derived when missing, shown early (deferred while speaking), adopted atomically.
+
+**Speed**
+
+| Change | Effect |
+|---|---|
+| Endpoint for complete questions | 0.6 s (was 1.2 s) |
+| Prompt budgets | Trimmed |
+| Measured, simulated stream | First frame 0.098 s vs ≈ 0.26 s; endpoint 0.6 s vs 1.2 s; context 1056 vs 1106 chars |
+
+Real Gemini/RayNeo timings need the device.
+
+## Update 2026-11-22 (s): VS Code ↔ iPhone ↔ RayNeo editor link
+
+**Security** (`App/EditorSecurity.swift` ⇄ `Tools/vscode-code-tutor/protocol.js`; shared vectors)
+- X25519 + HKDF-SHA256 with a single-use, 2-minute pairing code of about 50 bits.
+- A 30-day trust key in the Keychain / SecretStorage; ephemeral keys for every session.
+- ChaCha20-Poly1305 with strict sequence numbers and timestamps.
+- Rate limit, size limit, heartbeat watchdog. Each connection has its own buffer, so a stranger cannot disturb the connected editor.
+- Forget / revocation.
+
+**Bridge** (`EditorBridge`)
+- Fixed port 48654 (any port as fallback) plus the Bonjour name `RayPrompt-<tag>`.
+- Listening stops while the app is in the background.
+- Metrics.
+
+**Assistant** (`EditorAssistant`)
+- Display priority; `DiagnosticExplainer` rules plus an AI fallback on explicit help.
+- Explain Selection; test/build results.
+- Progress needs stable, present, error-free steps.
+
+**Extension:** reconnects with backoff and Bonjour rediscovery; sends metadata by default; excerpts only after confirmation, redacted, never from sensitive files.
+
+**Tests:** 390 in 74 suites (three runs) and 6 Node tests pass. Clean builds; analysis clean.
+
+**Not verified on hardware or a real network:** pairing, reconnection, Bonjour, latency, and the extension in a real VS Code.

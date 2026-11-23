@@ -1,15 +1,29 @@
 {
-  "name": "rayneo-code-tutor-companion",
+  "name": "rayprompt-code-tutor-companion",
   "displayName": "RayPrompt Code Tutor Companion",
-  "description": "Reports Code Tutor step progress (expected lines present + error count) to the paired iPhone. Never sends source.",
-  "version": "0.1.0",
+  "description": "Links VS Code to RayPrompt on your iPhone (encrypted, paired once). Sends editor metadata, structure checks, diagnostics and test results; code only when you explicitly ask.",
+  "version": "0.2.0",
   "engines": { "vscode": "^1.85.0" },
   "main": "./extension.js",
-  "activationEvents": ["onCommand:codeTutor.pair"],
+  "activationEvents": ["onStartupFinished"],
   "contributes": {
     "commands": [
-      { "command": "codeTutor.pair", "title": "Code Tutor: Pair with iPhone" },
-      { "command": "codeTutor.disconnect", "title": "Code Tutor: Disconnect" }
-    ]
-  }
+      { "command": "rayprompt.pair", "title": "RayPrompt: Pair with iPhone" },
+      { "command": "rayprompt.reconnect", "title": "RayPrompt: Reconnect" },
+      { "command": "rayprompt.disconnect", "title": "RayPrompt: Disconnect" },
+      { "command": "rayprompt.forget", "title": "RayPrompt: Forget iPhone" },
+      { "command": "rayprompt.explainSelection", "title": "RayPrompt: Explain Selection" },
+      { "command": "rayprompt.explainError", "title": "RayPrompt: Explain Error at Cursor" },
+      { "command": "rayprompt.dismiss", "title": "RayPrompt: Dismiss Help on Glasses" },
+      { "command": "rayprompt.toggleAutoProgress", "title": "RayPrompt: Toggle Automatic Step Progression" },
+      { "command": "rayprompt.showLog", "title": "RayPrompt: Show Connection Log" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "rayprompt.explainSelection", "when": "editorHasSelection", "group": "rayprompt" },
+        { "command": "rayprompt.explainError", "group": "rayprompt" }
+      ]
+    }
+  },
+  "scripts": { "test": "node --test test/*.test.js" }
 }

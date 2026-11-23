@@ -32,7 +32,8 @@ import Testing
         await say("How would you investigate a failed Salesforce integration?")
         #expect(ai.requests.count == 1)
         #expect(engine.currentAnswer?.text == ai.answer)
-        #expect(glasses.shown == [ai.answer + " \u{2713}"]) // completed answer: end marker on the final frame
+        #expect(Streaming.settled(glasses.shown) == [ai.answer + " \u{2713}"]) // completed answer: end marker on the final frame
+        #expect(glasses.shown.first == "First, I would check the API logs and verify whether the request is reaching the backend.") // sentence-level
         #expect(engine.state == .answerLocked)
         #expect(ai.requests[0].prompt.contains("Salesforce"))
     }
@@ -44,7 +45,7 @@ import Testing
         await say("First, I would check the API logs and verify whether the request is reaching the backend.")
         await say("Then I would compare the payload with the expected schema and retry the failed records.")
         #expect(ai.requests.count == 1)
-        #expect(glasses.shown.count == 1)
+        #expect(Streaming.settled(glasses.shown).count == 1)
         #expect(engine.counters.echo == 2)
         #expect(engine.state == .answerLocked)
     }

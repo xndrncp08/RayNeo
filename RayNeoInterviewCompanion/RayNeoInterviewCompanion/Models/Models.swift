@@ -144,18 +144,19 @@ struct CompletedTurn: Equatable, Sendable {
 enum AnswerLength: String, Codable, CaseIterable, Identifiable, Sendable {
     case short, standard, detailed
     var id: String { rawValue }
+    /// Guidance, not a quota: substance decides, and complex topics may use the longer range.
     var sentences: String {
         switch self {
-        case .short: "2-3"
-        case .standard: "3-5"
-        case .detailed: "6-8"
+        case .short: "about 2 to 3 sentences for a straightforward question and up to 5 when the topic needs it"
+        case .standard: "about 3 to 5 sentences for a straightforward question, and 6 to 9 or more when a complex topic needs it to be explained properly"
+        case .detailed: "6 to 9 sentences, or more when the topic needs it"
         }
     }
     var maximumTokens: Int {
         switch self {
-        case .short: 140
-        case .standard: 240
-        case .detailed: 400
+        case .short: 200
+        case .standard: 380
+        case .detailed: 560
         }
     }
 }
@@ -331,6 +332,10 @@ struct AppSettings: Codable, Equatable, Sendable {
     var adaptiveWalkthrough = AdaptiveWalkthroughMode.balanced
     /// Code frames' own layout, confirmed with Settings › Code Display Calibration.
     var codeLayout = CodeDisplayLayout()
+    /// Coding Skeleton Mode: a validated code outline before the walkthrough.
+    var codingSkeleton = true
+    /// Allow the paired VS Code companion to connect (encrypted; trusted editors only).
+    var editorLinkEnabled = false
     /// Show raw vs normalised transcript text in the app and diagnostics (private; off by default).
     var transcriptDebug = false
     /// Look-ahead (overlapping) windows: Sentence Frames on a lens verified to replace full frames.

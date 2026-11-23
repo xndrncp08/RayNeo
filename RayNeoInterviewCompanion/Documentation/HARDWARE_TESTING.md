@@ -351,3 +351,34 @@ Practice Mode with a consenting partner; Adaptive Walkthrough = Balanced.
 6. **Handoff:** your partner asks a new question. Expect an automatic switch, and no stale code afterwards.
 7. **Repeat:** steps 2–6 with paraphrasing, long pauses, and background noise. Record any premature or missed transitions.
    - Diagnostics shows "premature transition rejected (…)" and "transition authorized (…)" with reasons.
+
+## R. Natural answers, sentence streaming, Coding Skeleton Mode
+
+1. **Natural answers:** ask a simple question ("What is a REST API?") and a complex one ("How would you secure a multi-tenant Supabase app?").
+   - Expect about 3–5 sentences vs a longer, still natural answer.
+   - No "Great question" or corporate words; no repeated openings.
+2. **Sentence streaming:** with Gemini, note when the first sentence appears on the lens versus when the frame fills. Record Diagnostics › first frame submitted.
+3. **Skeleton:** ask "Write a JavaScript function that filters active students".
+   - The skeleton should appear before the rest of the answer and stay while you talk.
+   - Next shows the first explanation.
+   - Ask again while reading an answer aloud: the skeleton waits until you finish the sentence.
+4. **Follow-up:** "What if the array contains objects?" should give a revised walkthrough that answers the new point directly, without repeating everything.
+
+## S. VS Code + RayPrompt + RayNeo
+
+Needs a MacBook with VS Code, the iPhone running RayPrompt, and the RayNeo iO.
+
+1. **Pair:** iPhone › Allow paired VS Code › Pair new editor; in VS Code, **RayPrompt: Pair with iPhone** (address + code). Expect status `connected` on both.
+2. **Reconnection:** quit and reopen VS Code; switch the Mac's Wi-Fi off and on; lock and unlock the iPhone. Expect `connected` again without a code (note how long each takes).
+3. **Start a walkthrough:** open a `.js` file and ask the coding question from R.3.
+4. **Typing:** type the expected function. The step must advance only after you stop typing with the lines present and no errors.
+   - Delete a line: it must not advance.
+5. **Syntax error:** introduce one (e.g. remove a `)`).
+   - The iPhone shows the diagnostic.
+   - The glasses show a one-line hint only on a code step and only when you are not speaking.
+6. **Explain Error at Cursor:** the help appears on the glasses immediately; Dismiss restores the step.
+7. **Explain Selection:** select a line and confirm. The explanation appears on the iPhone and glasses; the walkthrough position is unchanged.
+8. **Test result:** run a test task (`npm test` as a VS Code task). The real result appears ("Tests passed/failed").
+9. **Glasses reconnection:** turn the glasses off and on. The current walkthrough block (or explicit help) comes back; a 20-second preview does not.
+10. **No interruptions:** while reading an explanation aloud, edit, save and scroll in VS Code. The teleprompter must not change.
+11. **Revocation:** Forget on the iPhone. VS Code shows "unpaired" on its next reconnect.

@@ -123,7 +123,7 @@ import Testing
         #expect(presenter.lastWrite?.answerID == id)
         reading.ingest("I", isFinal: false, speaker: .unknown)
         #expect(reading.answerID == id)
-        #expect(glasses.shown.count == 1)
+        #expect(Streaming.settled(glasses.shown).count == 1)
 
         // The next answer gets a new ID everywhere.
         ai.answer = "Multi-factor authentication requires two or more proofs of identity."
@@ -145,8 +145,9 @@ import Testing
         let plan = presenter.plan!
         for index in plan.sections.indices.dropFirst() { reading.nextSection(); await settle(); #expect(presenter.pageIndex == index) }
         // One caption per frame, frame 1 written once; reading every frame gives the answer exactly once.
-        #expect(glasses.shown.count == plan.sections.count)
-        let visibleFrames = glasses.shown.map { LensModel.visibleText([$0], rowWidth: 58).joined(separator: " ") }
+        let settled = Streaming.settled(glasses.shown)
+        #expect(settled.count == plan.sections.count)
+        let visibleFrames = settled.map { LensModel.visibleText([$0], rowWidth: 58).joined(separator: " ") }
         #expect(visibleFrames.joined(separator: " ") == (engine.currentAnswer?.text ?? "") + " \u{2713}")
     }
 

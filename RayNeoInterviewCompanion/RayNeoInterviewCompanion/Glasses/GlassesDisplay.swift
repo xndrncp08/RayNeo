@@ -269,6 +269,17 @@ enum GlassesError: LocalizedError, Equatable {
 
     /// The first frame of a streaming answer, when it can no longer change as more text arrives:
     /// the complete sentences so far already fill more than one frame. nil if it is not stable yet.
+    /// Sentence-level early frame: the first frame (or look-ahead window) built from the complete sentences
+    /// streamed so far. It only ever grows as more sentences complete (never loses shown words).
+    func earlyFrame(of completeSentences: String) -> String? {
+        let plan = ReadingPlan(answer: completeSentences, layout: effectiveLayout)
+        if lineScrolling {
+            guard !plan.lines.isEmpty else { return nil }
+            return plan.lines.prefix(windowLines).map(\.text).joined(separator: " ")
+        }
+        return plan.sections.first?.text
+    }
+
     func stableFirstFrame(of completeSentences: String) -> String? {
         let plan = ReadingPlan(answer: completeSentences, layout: effectiveLayout)
         if lineScrolling {
@@ -283,6 +294,20 @@ enum GlassesError: LocalizedError, Equatable {
     /// Shows a stable first frame of a still-streaming answer. The final answer then continues it via
     /// `present(_:continuingProvisional:)` without rewriting the frame if it is unchanged.
     func presentProvisional(_ firstFrame: String, answerID id: Int) async {
+        // Growing by complete sentences: the shown words stay where they are and the reading position is kept.
+        if provisional, id == answerID, let current = plan, !cleared, pageIndex == 0,
+           firstFrame != current.answer, firstFrame.hasPrefix(current.answer) {
+            let grown = ReadingPlan(answer: firstFrame, layout: effectiveLayout)
+            plan = grown
+            pages = lineScrolling ? grown.lineWindows : grown.windows
+            continuedAnswer = true
+            planRevision += 1
+            prepared = nil
+            generation += 1
+            DiagnosticLog.shared.record(.pipeline, "Answer #\(id): early frame grew by a complete sentence (\(firstFrame.count) chars)")
+            await write()
+            return
+        }
         DiagnosticLog.shared.record(.pipeline, "Answer #\(id): provisional first frame (\(firstFrame.count) chars) from a streaming answer")
         await present(firstFrame, answerID: id)
         provisional = true
@@ -292,7 +317,10 @@ enum GlassesError: LocalizedError, Equatable {
     /// position and reading progress, so nothing already shown is rewritten.
     /// `answerID` is the identity issued by the engine; callers without one (tests, tools) get a fresh one.
     /// `endMarker`: only for a successfully completed answer; rendered after its final word.
-    func present(_ text: String, answerID id: Int? = nil, continuingProvisional: Bool = false, endMarker marker: String? = nil) async {
+    /// `overlay`: an initial full frame (a walkthrough skeleton) written instead of the first window, so the
+    /// answer and its first code frame appear in one write.
+    func present(_ text: String, answerID id: Int? = nil, continuingProvisional: Bool = false, endMarker marker: String? = nil,
+                 overlay initial: (id: Int, rows: [String])? = nil) async {
         let reserve = marker.map { $0.count + 1 } ?? 0
         if continuingProvisional, provisional, id == answerID, let current = plan, !cleared,
            text.hasPrefix(current.answer), pageIndex == 0 {
@@ -301,14 +329,16 @@ enum GlassesError: LocalizedError, Equatable {
             for tryReserve in Set([reserve, 0]).sorted(by: >) {
                 let fullPlan = ReadingPlan(answer: text, layout: effectiveLayout, trailingReserve: tryReserve)
                 let fullPages = lineScrolling ? fullPlan.lineWindows : fullPlan.windows
-                guard fullPages.first == pages.first else { continue }
+                // The shown window may stay identical or grow by appended words; it never changes what was shown.
+                guard let first = fullPages.first, let shown = pages.first, first == shown || first.hasPrefix(shown) else { continue }
+                let grew = first != shown
                 provisional = false
                 continuedAnswer = true
                 plan = fullPlan
                 pages = fullPages
                 // The window already showing is the final one: adding the marker means retransmitting it.
                 let finalAlreadyShown = fullPages.count == 1 && lastWrittenText != nil
-                markerDeferred = marker != nil && (tryReserve == 0 || (finalAlreadyShown && !inPlaceReplacementVerified))
+                markerDeferred = marker != nil && (tryReserve == 0 || (finalAlreadyShown && !grew && !inPlaceReplacementVerified))
                 endMarker = markerDeferred ? nil : marker
                 if markerDeferred { DiagnosticLog.shared.record(.pipeline, "Answer #\(answerID): end marker deferred (final frame already on the lens; in-place replacement not verified)") }
                 planRevision += 1
@@ -329,7 +359,7 @@ enum GlassesError: LocalizedError, Equatable {
         let newPages = lineScrolling ? newPlan.lineWindows : newPlan.windows
         DiagnosticLog.shared.record(.pipeline, "Presenter invoked: answer \(newPlan.words.count) words → \(newPages.count) window(s) of ≤\(layout.lines) lines × \(layout.width) chars; target \(display.name); \(display.diagnosticSummary)")
         // The identical answer presented again while it is showing: nothing to write.
-        if !cleared, !droppedOverlay, newPlan.answer == plan?.answer, newPages == pages, pageIndex == 0, writtenGeneration == generation {
+        if initial == nil, !cleared, !droppedOverlay, newPlan.answer == plan?.answer, newPages == pages, pageIndex == 0, writtenGeneration == generation {
             if let id { answerID = id }
             return
         }
@@ -355,6 +385,9 @@ enum GlassesError: LocalizedError, Equatable {
         planRevision += 1
         pageIndex = 0
         requestedAt = Date()
+        if let initial {
+            overlay = (initial.id, Self.frame(initial.rows, padding: max(1, (frameRows ?? viewportRows) - initial.rows.count)), true)
+        }
         await write()
     }
 

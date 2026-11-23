@@ -22,6 +22,7 @@ struct DashboardView: View {
                     }
                 }
                 if model.sessionActive || model.snippets.snippet != nil { ConversationPanel(model: model) }
+                if model.editor.connected || model.editorAssistant.help != nil { EditorPanel(model: model) }
                 Section("Glasses") {
                     GlassesPreviewView(presenter: presenter, reading: model.reading)
                     HStack {
@@ -547,5 +548,38 @@ struct ExplainLineView: View {
             }
         }
         .font(.caption)
+    }
+}
+
+/// What the paired editor reports: file and function, diagnostics, help, test/build results.
+struct EditorPanel: View {
+    let model: AppModel
+
+    var body: some View {
+        let assistant = model.editorAssistant!
+        Section("VS Code") {
+            LabeledContent("Status", value: model.editor.status)
+            if let file = assistant.state.file {
+                LabeledContent("File", value: "\(file)\(assistant.state.line.map { " · line \($0)" } ?? "")\(assistant.state.symbol.map { " · \($0)" } ?? "")")
+            }
+            LabeledContent("Diagnostics", value: "\(assistant.state.errors) error(s), \(assistant.state.warnings) warning(s)")
+            ForEach(Array(assistant.diagnostics.prefix(3).enumerated()), id: \.offset) { _, diagnostic in
+                Text("\(diagnostic.severity) · line \(diagnostic.line.map(String.init) ?? "?"): \(diagnostic.message)").font(.caption2)
+            }
+            if let help = assistant.help {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(help.title).font(.caption.weight(.semibold))
+                    Text(help.detail).font(.caption)
+                    Button("Dismiss from glasses") { assistant.dismissHelp() }.font(.caption)
+                }
+            }
+            if let status = assistant.taskStatus { LabeledContent("Last test/build", value: status) }
+            if let latency = assistant.lastEventToCaptionMs {
+                LabeledContent("Editor event → caption", value: "\(Int(latency)) ms (submitted, not confirmed visible)")
+            }
+            Toggle("Automatic step progression from the editor", isOn: Binding(get: { assistant.autoProgress }, set: { on in
+                assistant.handle(EditorEvent(type: "auto", enabled: on))
+            }))
+        }
     }
 }

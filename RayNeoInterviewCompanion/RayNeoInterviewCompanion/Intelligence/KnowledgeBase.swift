@@ -100,8 +100,12 @@ enum InterviewPromptBuilder {
     Sound conversational, clear, and technically capable. Use contractions like "I'd" and "I've" where natural, and vary how sentences start; don't keep repeating "I'd probably".
     Prefer concrete technical steps and examples over abstract explanations.
     Explain technical reasoning in plain English while retaining important terminology.
-    Start directly with the answer rather than introducing the topic.
-    Avoid corporate buzzwords, unnecessary filler, generic motivational statements, and overly formal language.
+    Start directly with the answer rather than introducing the topic: never open with "Great question", "Certainly", "Absolutely", or by restating the question.
+    Explain your reasoning as you go (why you'd check or choose something), like a developer thinking out loud with a colleague.
+    Use plain words instead of corporate ones (say "use", not "leverage" or "utilize"; avoid "robust", "seamless", "synergy", "cutting-edge"), and avoid unnecessary filler, generic motivational statements, and overly formal language.
+    Don't repeat a point you already made, and don't start several sentences the same way.
+    When verified background includes a project that genuinely fits the question, mention one concrete detail from it naturally; never force a project into an unrelated answer.
+    For a follow-up, answer the latest question directly and build on what was already said instead of repeating it.
     When describing troubleshooting, explain what you'd check first, how you'd narrow down the problem, what you'd fix, and how you'd confirm it worked.
     Use a calm, approachable tone suitable for speaking directly to DJ, the technical interviewer.
     """
@@ -129,7 +133,7 @@ enum InterviewPromptBuilder {
         case .technical, .math, .ambiguous:
             style = """
             \(persona)
-            Answer in \(length.sentences) short spoken sentences that are easy to say aloud.
+            Answer in complete, natural spoken sentences that are easy to say aloud: \(length.sentences). Prioritise substance over sentence count.
             \(styleExample)
             """
         }
@@ -150,6 +154,58 @@ enum InterviewPromptBuilder {
 
 /// Makes model output safe to show on the glasses and to say aloud: removes Markdown structure only,
 /// never words, and keeps technical tokens like "C#", "Node.js" and ".NET" intact.
+/// Deterministic clean-up of generated speech: robotic openers and corporate wording. Prefix-stable (it only
+/// changes the opening and individual words), so an early frame and the final answer always agree.
+nonisolated enum NaturalAnswerStyle {
+    static let openers = [
+        #"^(?:that'?s|that is|what) an? (?:really |very )?(?:great|good|excellent|interesting) question[.!,]?\s*"#,
+        #"^(?:great|good|excellent) question[.!,]?\s*"#,
+        #"^(?:certainly|absolutely|of course|sure thing|definitely)[.!,]\s*"#,
+        #"^as an? (?:ai|language model|developer|candidate|interviewee)\b[^,.]*,\s*"#,
+        #"^(?:so,? )?(?:to answer your question|in answer to your question)[,:]?\s*"#,
+    ]
+    static let plainWords: [(String, String)] = [
+        ("utilization", "use"), ("utilizing", "using"), ("utilized", "used"), ("utilizes", "uses"), ("utilize", "use"),
+        ("leveraging", "using"), ("leveraged", "used"), ("leverages", "uses"), ("leverage", "use"), ("in order to", "to"),
+    ]
+
+    static func polish(_ text: String) -> String {
+        var result = text
+        var changed = true
+        while changed { // "Great question! Certainly, …"
+            changed = false
+            for pattern in openers {
+                if let range = result.range(of: pattern, options: [.regularExpression, .caseInsensitive]), range.lowerBound == result.startIndex {
+                    result.removeSubrange(range)
+                    changed = true
+                }
+            }
+        }
+        if let first = result.first, first.isLowercase, result != text { result = first.uppercased() + result.dropFirst() }
+        for (word, plain) in plainWords {
+            let capitalized = word.prefix(1).uppercased() + word.dropFirst()
+            result = result.replacingOccurrences(of: "\\b\(capitalized)\\b", with: plain.prefix(1).uppercased() + plain.dropFirst(),
+                                                 options: .regularExpression)
+            result = result.replacingOccurrences(of: "\\b\(word)\\b", with: plain, options: [.regularExpression, .caseInsensitive])
+        }
+        return result
+    }
+
+    /// Three or more sentences that open with the same two words ("I'd check… I'd check… I'd check…").
+    static func repetitiveOpening(_ text: String) -> String? {
+        var openings: [String: Int] = [:]
+        var count = 0
+        text.enumerateSubstrings(in: text.startIndex..., options: .bySentences) { sentence, _, _, _ in
+            guard let sentence else { return }
+            count += 1
+            let words = sentence.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "'" }).prefix(2).joined(separator: " ")
+            if !words.isEmpty { openings[words, default: 0] += 1 }
+        }
+        guard count >= 4, let repeated = openings.first(where: { $0.value >= 3 }) else { return nil }
+        return "opens \(repeated.value) sentences with \"\(repeated.key)\"; vary the openings"
+    }
+}
+
 nonisolated enum AnswerFormatter {
     /// The answer ends with a finished sentence (not cut off mid-sentence by a token limit).
     static func endsCleanly(_ text: String) -> Bool {

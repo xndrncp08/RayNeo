@@ -188,12 +188,13 @@ import Testing
 @Suite struct AnswerStyleTests {
     @Test func instructionsCarryTheConversationalPersonaAndPlainTextRules() {
         let text = InterviewPromptBuilder.instructions(length: .standard, portfolio: "")
-        for phrase in ["first person", "contractions", "Start directly with the answer", "corporate buzzwords",
-                       "what you'd check first", "DJ, the technical interviewer", "3-5 short spoken sentences",
+        for phrase in ["first person", "contractions", "Start directly with the answer", "corporate ones",
+                       "what you'd check first", "DJ, the technical interviewer", "about 3 to 5 sentences", "6 to 9 or more",
+                       "Prioritise substance over sentence count", "Great question",
                        "no Markdown", "Microsoft Entra ID", "Do not invent professional experience", "Style example only"] {
             #expect(text.contains(phrase), "missing: \(phrase)")
         }
-        #expect(InterviewPromptBuilder.instructions(length: .short, portfolio: "").contains("2-3 short spoken sentences"))
+        #expect(InterviewPromptBuilder.instructions(length: .short, portfolio: "").contains("about 2 to 3 sentences"))
         #expect(InterviewPromptBuilder.instructions(length: .detailed, portfolio: "Built a Next.js app").contains("Built a Next.js app"))
         let prompt = InterviewPromptBuilder.prompt(question: "How do you troubleshoot MFA?", followUpTo: nil, notes: ["MFA: check sign-in logs"])
         #expect(prompt.hasSuffix("Interviewer: How do you troubleshoot MFA?\nYour spoken answer:"))
@@ -225,6 +226,10 @@ import Testing
         await engine.handle(CompletedTurn(text: "How would you debug a failing API?", start: 0, end: 2))
         await engine.generationTask?.value
         #expect(engine.currentAnswer?.text == "I'd check the API logs first. Then I'd verify the token.")
-        #expect(glasses.shown == ["I'd check the API logs first. Then I'd verify the token. \u{2713}"])
+        // Sentence-level streaming: the first sentence appears first and the frame only grows by appending.
+        #expect(glasses.shown.last == "I'd check the API logs first. Then I'd verify the token. \u{2713}")
+        for (earlier, later) in zip(glasses.shown, glasses.shown.dropFirst()) {
+            #expect(later.replacingOccurrences(of: " \u{2713}", with: "").hasPrefix(earlier))
+        }
     }
 }

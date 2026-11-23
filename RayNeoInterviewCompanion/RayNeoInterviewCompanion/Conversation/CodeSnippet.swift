@@ -251,7 +251,7 @@ nonisolated struct CodeSnippet: Codable, Equatable, Sendable {
     var atLastStep: Bool { stepIndex >= walkthroughSteps.count - 1 }
 
     /// Starts the walkthrough of an answer whose first explanation the engine has already presented.
-    func startWalkthrough(_ walkthrough: CodingWalkthrough, snippet: CodeSnippet?, answerID: Int, endMarker: String?) {
+    func startWalkthrough(_ walkthrough: CodingWalkthrough, snippet: CodeSnippet?, answerID: Int, endMarker: String?, display: Bool = true) {
         if self.walkthrough?.id == walkthrough.id, self.answerID == answerID {
             return DiagnosticLog.shared.record(.pipeline, "Duplicate walkthrough activation suppressed (answer #\(answerID))")
         }
@@ -271,7 +271,8 @@ nonisolated struct CodeSnippet: Codable, Equatable, Sendable {
         let token = transitionToken
         DiagnosticLog.shared.record(.pipeline, "Code Tutor walkthrough #\(id) activated (answer #\(answerID)): \(walkthrough.blocks.count) blocks, \(walkthroughSteps.count) steps; code layout \(layout.rows)x\(layout.charactersPerRow)\(codeLayout.verified ? " (verified)" : " (not yet verified on the glasses)")")
         onShown()
-        Task { await showStep(id, token: token) }
+        pendingEarlySkeleton = nil
+        if display { Task { await showStep(id, token: token) } }
     }
 
     /// Code layout used on the lens: the calibrated code layout, never taller than the caption rows.
@@ -345,6 +346,14 @@ nonisolated struct CodeSnippet: Codable, Equatable, Sendable {
         requestTransition(by: -1, source: source, reason: reason)
     }
 
+    /// Shows the current step again (after a temporary editor caption covered it).
+    func redisplayCurrentStep() {
+        guard walkthrough != nil else { return }
+        transitionToken += 1
+        let id = snippetID, token = transitionToken
+        Task { await showStep(id, token: token) }
+    }
+
     func restartWalkthrough() {
         guard walkthrough != nil, stepIndex > 0 else { return }
         requestTransition(by: -stepIndex, source: .restart, reason: "Restart")
@@ -353,11 +362,50 @@ nonisolated struct CodeSnippet: Codable, Equatable, Sendable {
     /// The utterance in progress (partials seen, final not yet): it may belong to the previous block.
     private var utteranceInProgress = false
 
+    // MARK: Coding Skeleton Mode: early skeleton
+
+    /// A validated skeleton of a still-streaming answer, on the glasses (overlay id = -answerID).
+    private(set) var earlySkeleton: (answerID: Int, rows: [String])?
+    /// Waiting for the wearer to finish their sentence: a skeleton never interrupts a spoken explanation.
+    private(set) var pendingEarlySkeleton: (answerID: Int, rows: [String])?
+
+    func showEarlySkeleton(_ code: String, answerID: Int) {
+        guard let rows = CodePaginator.paginate(code, layout: effectiveCodeLayout).pages.first?.rows, !rows.isEmpty else { return }
+        if utteranceInProgress {
+            pendingEarlySkeleton = (answerID, rows)
+            return DiagnosticLog.shared.record(.pipeline, "Skeleton for answer #\(answerID) ready; waiting for the end of your sentence")
+        }
+        displayEarlySkeleton(answerID: answerID, rows: rows)
+    }
+
+    private func displayEarlySkeleton(answerID: Int, rows: [String]) {
+        pendingEarlySkeleton = nil
+        earlySkeleton = (answerID, rows)
+        DiagnosticLog.shared.record(.pipeline, "Skeleton for answer #\(answerID) shown while the walkthrough is generated")
+        Task { _ = await presenter.showOverlay(rows, id: -answerID, persistent: true) }
+    }
+
+    /// The answer behind an early skeleton failed or was cancelled: the skeleton leaves the glasses.
+    func withdrawEarlySkeleton(answerID: Int) {
+        if pendingEarlySkeleton?.answerID == answerID { pendingEarlySkeleton = nil }
+        guard earlySkeleton?.answerID == answerID else { return }
+        earlySkeleton = nil
+        DiagnosticLog.shared.record(.pipeline, "Early skeleton for answer #\(answerID) withdrawn")
+        Task { await presenter.endOverlay(id: -answerID) }
+    }
+
+    /// Presents a skeleton-first walkthrough: the skeleton and the answer in one write (no flash of text).
+    func presentWalkthrough(_ walkthrough: CodingWalkthrough, snippet: CodeSnippet?, answerID: Int, endMarker: String?) async {
+        startWalkthrough(walkthrough, snippet: snippet, answerID: answerID, endMarker: endMarker, display: false)
+        await showStep(snippetID, token: transitionToken)
+    }
+
     /// Speech while an explanation block is shown (partials and finals). Advances only on enough evidence
     /// that the block was explained — verbatim or in the wearer's own words — never on silence alone.
     func walkthroughSpeech(_ text: String, isFinal: Bool, alignmentProgress: Double = 0, alignmentConfidence: Double = 0,
                            readingComplete: Bool = false) {
         utteranceInProgress = !isFinal && !text.isEmpty
+        if !utteranceInProgress, let pending = pendingEarlySkeleton { displayEarlySkeleton(answerID: pending.answerID, rows: pending.rows) }
         guard let walkthrough, var current = evaluator, let block = currentBlock, !block.kind.isCode, !atLastStep else { return }
         guard !walkthroughPaused, !interrupted, adaptiveMode != .off else { return }
         current.mode = adaptiveMode
@@ -447,7 +495,18 @@ nonisolated struct CodeSnippet: Codable, Equatable, Sendable {
                 editorStatus = nil
                 onCodeStep(block.id, block.language ?? walkthrough.language, structures)
             }
-            let submitted = await presenter.showOverlay(step.rows, id: id, persistent: true)
+            let target = answerID ?? walkthrough.answerID
+            let submitted: Bool
+            if presenter.answerID != target, let explanation = walkthrough.blocks.first(where: { $0.kind == .explanation }) {
+                // The walkthrough's answer is not on the teleprompter yet (skeleton first): one atomic write.
+                presentingExplanation = true
+                await presenter.present(explanation.text, answerID: target, overlay: (id, step.rows))
+                presentingExplanation = false
+                submitted = presenter.lastWrite?.answerID == target && presenter.lastWrite?.result.hasPrefix("handed") == true
+            } else {
+                submitted = await presenter.showOverlay(step.rows, id: id, persistent: true)
+            }
+            earlySkeleton = nil
             logEvidenceLatency(submitted)
             DiagnosticLog.shared.record(.pipeline, "Code frame \(block.id) part \(step.part + 1)/\(step.parts): \(step.rows.count) rows "
                                         + (submitted ? "submitted to Bluetooth (visibility not confirmed by the glasses)" : "held: glasses not ready"))

@@ -4,9 +4,12 @@ import Foundation
 nonisolated struct WalkthroughBlock: Identifiable, Equatable, Sendable {
     enum Kind: String, Sendable {
         case explanation, code, example, test, result
-        var isCode: Bool { self == .code || self == .example || self == .test }
+        /// Concise outline of the final solution shown before the walkthrough (Coding Skeleton Mode).
+        case skeleton
+        var isCode: Bool { self == .code || self == .example || self == .test || self == .skeleton }
         var label: String {
             switch self {
+            case .skeleton: "Skeleton"
             case .explanation: "Explain"
             case .code: "Code"
             case .example: "Example"
@@ -49,12 +52,12 @@ nonisolated struct CodingWalkthrough: Equatable, Sendable {
     func next(of block: WalkthroughBlock) -> WalkthroughBlock? { block.index + 1 < blocks.count ? blocks[block.index + 1] : nil }
 
     /// "TESTS" and "STEPS" come from the older single-CODE format and are accepted as a repair.
-    static let labels = ["EXPLAIN", "CODE", "EXAMPLE", "TESTS", "TEST", "RESULT", "EDGE CASES", "COMPLEXITY", "STEPS"]
+    static let labels = ["SKELETON", "EXPLAIN", "CODE", "EXAMPLE", "TESTS", "TEST", "RESULT", "EDGE CASES", "COMPLEXITY", "STEPS"]
 
     /// What the model is asked to produce (one request for the whole walkthrough).
-    static func formatInstruction(language: String) -> String {
+    static func formatInstruction(language: String, skeleton: Bool = false) -> String {
         """
-        Answer as ONE guided walkthrough. Start every block with its label alone at the start of a line:
+        Answer as ONE guided walkthrough. Start every block with its label alone at the start of a line:\(skeleton ? "\nSKELETON: first, a concise, syntactically correct \(language) outline of the final solution: the real signature and structure, with a comment where the body goes (at most 6 lines). It must compile as written and use the same names as the final code." : "")
         EXPLAIN: one or two short spoken sentences ("First, I'd…").
         CODE: the \(language) code built so far. Each CODE block repeats the previous code and adds the next part, keeping every name it introduced; the last CODE block is the complete working solution.
         Alternate EXPLAIN and CODE (2 or 3 CODE blocks for a small task) and end with RESULT: one sentence on what the code returns.
@@ -96,6 +99,7 @@ nonisolated struct CodingWalkthrough: Equatable, Sendable {
             }
             let kind: WalkthroughBlock.Kind = switch item.label {
             case "CODE": .code
+            case "SKELETON": .skeleton
             case "EXAMPLE": .example
             case "TEST", "TESTS": .test
             case "RESULT": .result
@@ -112,6 +116,48 @@ nonisolated struct CodingWalkthrough: Equatable, Sendable {
                                  edgeCases: edgeCases, complexity: complexity, steps: steps)
     }
 
+    /// The same walkthrough with a skeleton first: the model's own, or one derived from the final code when it
+    /// gave none (signature, a body comment, the closing line). Unchanged when no safe skeleton can be made.
+    func withSkeleton() -> CodingWalkthrough {
+        guard !blocks.contains(where: { $0.kind == .skeleton }), let final = finalCode,
+              let outline = Self.deriveSkeleton(final, language: language) else { return self }
+        var copy = self
+        let skeleton = WalkthroughBlock(id: "", index: 0, kind: .skeleton, text: outline, language: language)
+        copy.blocks = ([skeleton] + blocks).enumerated().map { index, block in
+            var renumbered = WalkthroughBlock(id: "\(id)-b\(index)", index: index, kind: block.kind, text: block.text, language: block.language)
+            renumbered.isComplete = block.isComplete
+            return renumbered
+        }
+        return copy
+    }
+
+    /// Signature + comment + closing line for brace languages, `def …:` + `...` for Python. nil otherwise.
+    static func deriveSkeleton(_ code: String, language: String) -> String? {
+        let lines = code.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard let first = lines.first, lines.count >= 3 else { return nil }
+        if language == "Python" {
+            guard first.trimmingCharacters(in: .whitespaces).hasPrefix("def ") || first.hasPrefix("class "), first.hasSuffix(":") else { return nil }
+            return first + "\n    ...  # implementation below"
+        }
+        guard first.hasSuffix("{"), let last = lines.last, last.trimmingCharacters(in: .whitespaces).hasPrefix("}") else { return nil }
+        let outline = [first, "  // implementation below", last].joined(separator: "\n")
+        return CodeLanguageDetector.balanced(outline) ? outline : nil
+    }
+
+    /// The skeleton block of a still-streaming answer, once the next label shows it is complete.
+    static func completedSkeleton(in partial: String) -> String? {
+        let lines = partial.components(separatedBy: .newlines)
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("SKELETON:") }),
+              let end = lines[(start + 1)...].firstIndex(where: { line in
+                  labels.contains { line.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix($0 + ":") }
+              }) else { return nil }
+        var body = Array(lines[(start + 1)..<end]).filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("```") }
+        let inline = lines[start].trimmingCharacters(in: .whitespaces).dropFirst("SKELETON:".count).trimmingCharacters(in: .whitespaces)
+        if !inline.isEmpty { body.insert(inline, at: 0) }
+        let code = cleanCode(body)
+        return code.isEmpty ? nil : code
+    }
+
     static func cleanCode(_ lines: [String]) -> String {
         let cleaned = lines.map { $0.replacingOccurrences(of: "\t", with: "    ").replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression) }
         return Array(cleaned.drop(while: \.isEmpty).reversed().drop(while: \.isEmpty).reversed()).joined(separator: "\n")
@@ -119,7 +165,18 @@ nonisolated struct CodingWalkthrough: Equatable, Sendable {
 
     /// Problems that make the walkthrough unusable (nil when it is coherent).
     func problem(requiredLanguage: String?) -> String? {
-        guard blocks.first?.kind == .explanation else { return "the walkthrough must start with an EXPLAIN block" }
+        guard blocks.first(where: { $0.kind != .skeleton })?.kind == .explanation else { return "the walkthrough must start with an EXPLAIN block" }
+        if let skeleton = blocks.first(where: { $0.kind == .skeleton }) {
+            guard skeleton.index == 0 else { return "the SKELETON block must come first" }
+            if skeleton.text.components(separatedBy: "\n").count > 10 { return "the skeleton is not concise (more than 10 lines)" }
+            if !CodeLanguageDetector.balanced(skeleton.text) { return "the skeleton is not syntactically complete (unbalanced brackets)" }
+            if let requiredLanguage, let mismatch = CodeLanguageDetector.mismatch(skeleton.text, required: requiredLanguage) { return "skeleton: " + mismatch }
+            if let final = finalCode {
+                for name in CodeLanguageDetector.declaredNames(skeleton.text) where !final.contains(name) {
+                    return "the skeleton declares \(name), which the final solution does not use"
+                }
+            }
+        }
         guard blocks.contains(where: { $0.kind == .explanation && $0.index > 0 }) || blocks.count <= 3 else {
             return "the walkthrough needs explanations between the code blocks"
         }

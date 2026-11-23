@@ -233,12 +233,13 @@ import Testing
 
         await engine.handle(CompletedTurn(text: "How would you investigate a failed integration?", start: 0, end: 2))
         await engine.generationTask?.value
-        #expect(io.sent(business: 0x13, type: 5).count == 1)
+        let captions = io.sent(business: 0x13, type: 5).count
+        #expect(captions >= 1 && captions <= 2) // first sentence, then the completed frame
 
         await engine.handle(CompletedTurn(text: "First, I would check the API logs and verify whether the request is reaching the backend.", start: 3, end: 6))
         await engine.generationTask?.value
         await presenter.present(ai.answer) // identical re-present must not cause another write
-        #expect(io.sent(business: 0x13, type: 5).count == 1)
+        #expect(io.sent(business: 0x13, type: 5).count == captions)
         #expect(engine.state == .answerLocked)
     }
 

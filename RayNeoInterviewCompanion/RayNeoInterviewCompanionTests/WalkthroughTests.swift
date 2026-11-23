@@ -337,6 +337,7 @@ enum Walk {
                          glassesFactory: { _ in glasses }, knowledge: KnowledgeBase(url: nil), permissions: { nil })
         model.settings.semanticClassification = false
         model.settings.readingMode = .speechSynced
+        model.settings.codingSkeleton = false // this suite covers explanation → code reading (skeletons: NaturalAndSkeletonTests)
     }
 
     func wait(_ seconds: Double = 0.08) async { try? await Task.sleep(for: .seconds(seconds)) }

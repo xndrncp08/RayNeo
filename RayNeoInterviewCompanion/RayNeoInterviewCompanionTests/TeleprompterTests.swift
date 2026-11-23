@@ -292,7 +292,7 @@ import Testing
         #expect(engine.state == .generating)
         #expect(markers(glasses.shown) == 0)
         await engine.generationTask?.value
-        #expect(glasses.shown.count == 1)        // the completed answer did not resend the first window
+        #expect(Streaming.settled(glasses.shown).count == 1) // the first window only grew; nothing was rewritten
         #expect(markers(glasses.shown) == 0)
         #expect(engine.currentAnswer?.earlyFrameSeconds != nil)
     }

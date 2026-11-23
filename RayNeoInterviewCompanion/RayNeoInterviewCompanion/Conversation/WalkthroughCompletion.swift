@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// How readily a guided walkthrough moves on by itself. Changes evidence thresholds, never adds delays.
@@ -247,31 +246,6 @@ nonisolated enum CodeStructures {
     }
 }
 
-/// Newline-delimited JSON exchanged with the editor companion. Only file names, booleans and counts travel
-/// from the editor; the iPhone sends the step's expected structures (generated code, not your files).
-nonisolated struct EditorMessage: Codable, Equatable, Sendable {
-    var type: String
-    var nonce: String?
-    var mac: String?
-    var blockID: String?
-    var language: String?
-    var structures: [String]?
-    var present: [Bool]?
-    var file: String?
-    var errors: Int?
-
-    /// Pairing proof: HMAC-SHA256 of the server nonce with the 6-digit code shown on the iPhone.
-    static func mac(code: String, nonce: String) -> String {
-        let key = SymmetricKey(data: Data(code.utf8))
-        return HMAC<SHA256>.authenticationCode(for: Data(nonce.utf8), using: key).map { String(format: "%02x", $0) }.joined()
-    }
-
-    static func verify(_ mac: String?, code: String, nonce: String) -> Bool {
-        guard let mac, let given = Data(hexString: mac) else { return false }
-        return HMAC<SHA256>.isValidAuthenticationCode(given, authenticating: Data(nonce.utf8), using: SymmetricKey(data: Data(code.utf8)))
-    }
-}
-
 /// One progress report for the active code step.
 nonisolated struct EditorProgress: Equatable, Sendable {
     var blockID: String
@@ -279,19 +253,4 @@ nonisolated struct EditorProgress: Equatable, Sendable {
     var language: String?
     var present: [Bool]
     var errors: Int?
-}
-
-private extension Data {
-    nonisolated init?(hexString: String) {
-        guard hexString.count % 2 == 0 else { return nil }
-        var bytes: [UInt8] = []
-        var index = hexString.startIndex
-        while index < hexString.endIndex {
-            let next = hexString.index(index, offsetBy: 2)
-            guard let byte = UInt8(hexString[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
-        }
-        self.init(bytes)
-    }
 }

@@ -42,11 +42,12 @@ struct Diagnostics: Equatable {
         didSet { if muted != oldValue { trace(.session, muted ? "Muted" : "Unmuted") } }
     }
     let editor = EditorBridge()
+    private(set) var editorAssistant: EditorAssistant!
 
     /// Speech for the hands-free walkthrough. While a new question is being answered (or one is waiting to
     /// be confirmed) progression pauses, keeping its position.
     private func feedWalkthrough(_ text: String, isFinal: Bool) {
-        guard snippets.walkthrough != nil else { return }
+        // Always tracked: an early skeleton waits for the end of the wearer's sentence.
         snippets.interrupted = engine.state == .generating || engine.state == .questionDetected || engine.preparedAnswer != nil
         snippets.walkthroughSpeech(text, isFinal: isFinal, alignmentProgress: reading.progress, alignmentConfidence: reading.confidence,
                                    readingComplete: reading.readingComplete)
@@ -63,6 +64,15 @@ struct Diagnostics: Equatable {
         do { for try await partial in aiProvider.streamAnswer(request) { answer = partial } } catch { return nil }
         let lower = answer.lowercased()
         return lower.hasPrefix("yes") ? true : lower.hasPrefix("no") ? false : nil
+    }
+
+    /// One bounded AI request for the editor assistant (explicit help, Explain Selection).
+    func askOnce(instructions: String, prompt: String) async -> String? {
+        guard aiProvider.status == .ready else { return nil }
+        var text = ""
+        do { for try await partial in aiProvider.streamAnswer(AnswerRequest(instructions: instructions, prompt: prompt, maximumTokens: 160)) { text = partial } }
+        catch { return nil }
+        return text.isEmpty ? nil : text
     }
 
     /// The latest "Explain This Line" result (iPhone only; the walkthrough position is unchanged).
@@ -201,8 +211,21 @@ struct Diagnostics: Equatable {
         snippets.onCodeStep = { [unowned self] blockID, language, structures in
             self.editor.expect(blockID: blockID, language: language, structures: structures)
         }
-        editor.onProgress = { [unowned self] in self.snippets.editorProgress($0) }
+        editorAssistant = EditorAssistant(presenter: presenter, snippets: snippets)
+        editorAssistant.isSpeaking = { [unowned self] in !self.volatileText.isEmpty }
+        editorAssistant.codeLayout = { [unowned self] in self.snippets.effectiveCodeLayout }
+        editorAssistant.askAI = { [unowned self] instructions, prompt in await self.askOnce(instructions: instructions, prompt: prompt) }
+        editor.onEvent = { [unowned self] event in self.editorAssistant.handle(event) }
+        if settings.editorLinkEnabled { editor.setEnabled(true) }
         snippets.semanticJudge = { [unowned self] expected, heard in await self.judgeExplanation(expected: expected, heard: heard) }
+        engine.onEarlySkeleton = { [unowned self] answerID, code in self.snippets.showEarlySkeleton(code, answerID: answerID) }
+        engine.onEarlyContentWithdrawn = { [unowned self] answerID in self.snippets.withdrawEarlySkeleton(answerID: answerID) }
+        engine.presentWalkthrough = { [unowned self] answer in
+            guard let walkthrough = answer.walkthrough else { return false }
+            await self.snippets.presentWalkthrough(walkthrough, snippet: answer.snippet, answerID: answer.answerID,
+                                                   endMarker: self.engine.endMarker(for: answer))
+            return true
+        }
         engine.codingResolver = { [unowned self] in self.codingTasks.resolve($0) }
         engine.codingTask = { [unowned self] in self.codingTasks.task }
         engine.contextKey = { [unowned self] in self.conversation.project ?? "" }
@@ -450,11 +473,14 @@ struct Diagnostics: Equatable {
         trace(.session, "Scene phase: \(phase)")
         switch phase {
         case .background:
-            // Capture continues under the audio background mode; nothing is torn down.
+            // Capture continues under the audio background mode; the editor link stops listening (iOS may
+            // suspend the app; VS Code reconnects with backoff when it is active again).
             if sessionActive { speechStatus += " (background)" }
+            editor.setSuspended(true)
         case .active:
             speechStatus = speechStatus.replacingOccurrences(of: " (background)", with: "")
             refreshDiagnostics()
+            editor.setSuspended(false)
         default: break
         }
     }
@@ -538,6 +564,7 @@ struct Diagnostics: Equatable {
             reading.ingest(text, isFinal: true, speaker: liveSpeakerLabel())
             readingProgressed()
             feedWalkthrough(text, isFinal: true)
+            editorAssistant.speechEnded()
             if let started = diagnostics.sessionStartedAt {
                 diagnostics.recognitionLatency = max(0, Date().timeIntervalSince(started) - end)
             }
@@ -714,17 +741,19 @@ struct Diagnostics: Equatable {
     /// Prompt notes: knowledge-base topics, then (when allowed) retrieved personal memory and the
     /// conversation so far, each within a fixed budget.
     func notes(for question: String) -> [String] {
-        var notes = knowledge.notes(for: question)
+        // Bounded prompt: smaller budgets keep the first token fast; only what is relevant is included.
+        var notes = knowledge.notes(for: question, limit: 2, maximumCharacters: 400)
         guard personalContextAllowed else { lastMemoryReferences = []; return notes }
         if settings.personalMemoryEnabled {
-            let retrieval = memory.retrieve(question, topicProject: conversation.project)
+            let retrieval = memory.retrieve(question, topicProject: conversation.project, budget: 700)
+            if !retrieval.entries.isEmpty { notes = Array(notes.prefix(1)) } // your memory beats generic topic notes
             lastMemoryReferences = retrieval.references
             if !retrieval.text.isEmpty {
                 notes.append("Verified background (mention a project only if it directly answers the question; never add details beyond this):\n\(retrieval.text)")
                 DiagnosticLog.shared.record(.pipeline, "Memory retrieved: \(retrieval.references.count) reference(s): \(retrieval.references.joined(separator: ", "))")
             }
         }
-        let context = conversation.context(budget: 700)
+        let context = conversation.context(budget: 550)
         if !context.isEmpty { notes.append("Conversation so far (resolve \"that\", \"it\" and follow-ups against this):\n\(context)") }
         return notes
     }

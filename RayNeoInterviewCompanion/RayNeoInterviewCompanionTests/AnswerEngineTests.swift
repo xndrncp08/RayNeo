@@ -124,7 +124,7 @@ import Testing
             #expect(text.contains("Microsoft Entra ID"))
             #expect(text.contains("Do not invent professional experience"))
         }
-        #expect(technical.contains("DJ, the technical interviewer") && technical.contains("3-5 short spoken sentences"))
+        #expect(technical.contains("DJ, the technical interviewer") && technical.contains("about 3 to 5 sentences"))
         #expect(!technical.contains("\"I'd probably\" where natural"))
         #expect(factual.contains("one direct, informative sentence") && factual.contains("Never add sentences about checking documentation") && !factual.contains("DJ"))
         #expect(coding.contains("Never claim the code was run") && !coding.contains("Style example"))

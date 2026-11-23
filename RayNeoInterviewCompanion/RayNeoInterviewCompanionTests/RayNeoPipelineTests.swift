@@ -55,7 +55,7 @@ import Testing
 
         await engine.handle(CompletedTurn(text: "How would you investigate a failed integration?", start: 0, end: 2))
         await engine.generationTask?.value
-        #expect(captionTexts == [ai.answer + " \u{2713}"])
+        #expect(Streaming.settled(captionTexts) == [ai.answer + " \u{2713}"])
         #expect(presenter.deliveryStatus.contains("compatibility mode"))
         #expect(engine.state == .answerLocked)
     }

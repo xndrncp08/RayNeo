@@ -44,6 +44,11 @@ import Foundation
     private var language = "JavaScript"
     private var requiredLanguage: String?
     private var lastWalkthrough: CodingWalkthrough?
+    /// Coding Skeleton Mode: ask for (or derive) a skeleton block first.
+    var codingSkeleton = false
+    /// Receives the skeleton of the first draft as soon as its block is complete and validated.
+    var onSkeleton: (String) -> Void = { _ in }
+    private var skeletonReported = false
     private var firstSentenceAt: Double?
 
     init(provider: any AIResponseProvider, instructions: @escaping (QuestionCategory) -> String, notes: @escaping (String) -> [String],
@@ -110,6 +115,7 @@ import Foundation
                                               context: context, started: started, firstToken: &firstToken)
         var walkthrough = lastWalkthrough
         text = trimFiller(text, category: route.category) ?? text
+        if route.category != .coding { text = NaturalAnswerStyle.polish(text) }
         var verdict = validate(text, snippet: snippet, wantsCode: wantsCode, question: subject, category: route.category)
         var regenerated = false
         if !verdict.passed {
@@ -118,6 +124,7 @@ import Foundation
             var (second, secondSnippet) = try await draft(question, category: route.category, previous: previous, correction: verdict.reason,
                                                           wantsCode: wantsCode, context: context, started: started, firstToken: &firstToken)
             second = trimFiller(second, category: route.category) ?? second
+            if route.category != .coding { second = NaturalAnswerStyle.polish(second) }
             let secondVerdict = validate(second, snippet: secondSnippet, wantsCode: wantsCode, question: subject, category: route.category)
             snippet = secondSnippet
             walkthrough = lastWalkthrough
@@ -158,6 +165,9 @@ import Foundation
             }
         }
         if let unsupported = groundingCheck(text) { return AnswerValidator.Verdict(passed: false, reason: unsupported) }
+        if category == .technical, let repetition = NaturalAnswerStyle.repetitiveOpening(text) {
+            return AnswerValidator.Verdict(passed: false, reason: repetition)
+        }
         return verdict
     }
 
@@ -186,7 +196,7 @@ import Foundation
         if let correction {
             instructionText += "\nA previous draft was rejected because it \(correction). Answer the question itself, directly."
         }
-        if wantsCode { instructionText += "\n" + CodingWalkthrough.formatInstruction(language: language) }
+        if wantsCode { instructionText += "\n" + CodingWalkthrough.formatInstruction(language: language, skeleton: codingSkeleton) }
         let maximumTokens = switch category {
         case .factual: 110
         case .coding: wantsCode ? 520 : 220
@@ -215,10 +225,17 @@ import Foundation
                 log(String(format: "Answer #%d: first complete sentence after %.2fs", answerID, firstSentenceAt ?? 0))
             }
             onPartial(formatted, category)
+            // Coding Skeleton Mode: the skeleton can be shown before the rest of the walkthrough arrives.
+            if wantsCode, codingSkeleton, correction == nil, !skeletonReported, let skeleton = CodingWalkthrough.completedSkeleton(in: partial),
+               CodeLanguageDetector.balanced(skeleton), requiredLanguage.flatMap({ CodeLanguageDetector.mismatch(skeleton, required: $0) }) == nil {
+                skeletonReported = true
+                onSkeleton(skeleton)
+            }
         }
         try Task.checkCancellation()
         lastWalkthrough = nil
-        if wantsCode, let walkthrough = CodingWalkthrough.parse(text, language: language, answerID: answerID) {
+        if wantsCode, var walkthrough = CodingWalkthrough.parse(text, language: language, answerID: answerID) {
+            if codingSkeleton { walkthrough = walkthrough.withSkeleton() }
             lastWalkthrough = walkthrough
             var snippet = CodeSnippet(language: language.lowercased(), code: walkthrough.finalCode ?? "")
             snippet.problem = question

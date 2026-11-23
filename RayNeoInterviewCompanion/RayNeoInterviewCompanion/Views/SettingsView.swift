@@ -79,10 +79,11 @@ struct SettingsView: View {
                         ForEach(CodeSnippetController.Mode.allCases) { Text($0.label).tag($0) }
                     }
                     Stepper("Preview: \(Int(model.settings.codeSnippetSeconds)) s per frame", value: $model.settings.codeSnippetSeconds, in: 5...60, step: 5)
+                    Toggle("Coding Skeleton Mode (outline first)", isOn: $model.settings.codingSkeleton)
                     Picker("Adaptive Walkthrough", selection: $model.settings.adaptiveWalkthrough) {
                         ForEach(AdaptiveWalkthroughMode.allCases) { Text($0.label).tag($0) }
                     }
-                    EditorPairingRow(editor: model.editor)
+                    EditorPairingRow(model: model)
                     Stepper(model.settings.walkthroughCodeSeconds == 0 ? "Walkthrough code: advance on Next only"
                             : "Walkthrough code: auto-advance after \(Int(model.settings.walkthroughCodeSeconds)) s",
                             value: $model.settings.walkthroughCodeSeconds, in: 0...60, step: 5)
@@ -218,18 +219,43 @@ struct GeminiSettingsSection: View {
     }
 }
 
-/// Optional pairing with the VS Code companion (Tools/vscode-code-tutor) for code-step progress.
+/// The VS Code link: allow it, pair a new editor (one-time code), see trusted editors and revoke them.
 struct EditorPairingRow: View {
-    let editor: EditorBridge
+    @Bindable var model: AppModel
+    var editor: EditorBridge { model.editor }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle("Pair a code editor", isOn: Binding(get: { editor.listening }, set: { $0 ? editor.start() : editor.stop() }))
-            if editor.listening {
-                Text("Code \(editor.pairingCode) · connect to \(EditorBridge.wifiAddress() ?? "this iPhone's Wi-Fi address"):\(editor.port.map(String.init) ?? "…")")
-                    .font(.caption.monospaced())
-                Text(editor.status).font(.caption2).foregroundStyle(.secondary)
-                Text("Same Wi-Fi only. The editor sends file names, which expected lines are present and its error count — never your source.")
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Allow paired VS Code", isOn: Binding(get: { model.settings.editorLinkEnabled }, set: { on in
+                model.settings.editorLinkEnabled = on
+                editor.setEnabled(on)
+            }))
+            Text(editor.status).font(.caption2).foregroundStyle(.secondary)
+            if model.settings.editorLinkEnabled {
+                if let pairing = editor.pairing {
+                    Text("Pairing code \(pairing.code)").font(.callout.monospaced().bold())
+                    Text("In VS Code: “RayPrompt: Pair with iPhone”, address \(EditorBridge.wifiAddress() ?? "this iPhone's Wi-Fi address"):\(editor.port.map(String.init) ?? String(EditorBridge.preferredPort)). Valid 2 minutes, one attempt.")
+                        .font(.caption2)
+                    Button("Cancel pairing") { editor.cancelPairing() }.font(.caption)
+                } else {
+                    Button("Pair new editor") { editor.startPairing() }
+                }
+                ForEach(editor.trusted) { trusted in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(trusted.name).font(.caption.weight(.semibold))
+                            Text("Paired \(trusted.pairedAt.formatted(date: .abbreviated, time: .omitted)) · expires \(trusted.expiresAt.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if editor.connectedEditor?.deviceID == trusted.deviceID { Button("Disconnect") { editor.disconnect() }.font(.caption) }
+                        Button("Forget", role: .destructive) { editor.forget(trusted.deviceID) }.font(.caption)
+                    }
+                }
+                let m = editor.metrics
+                Text("Pairings \(m.pairings) · reconnects \(m.resumes) · auth failures \(m.authFailures) · rejected \(m.rejectedMessages) · heartbeat losses \(m.heartbeatTimeouts)")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                Text("Encrypted and authenticated (not just same Wi-Fi). VS Code sends file names, positions, structure checks, diagnostics and test results; code only when you choose Explain Selection or Explain Error. Listening stops while RayPrompt is in the background.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
