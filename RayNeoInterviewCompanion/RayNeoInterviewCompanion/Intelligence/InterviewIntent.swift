@@ -215,7 +215,7 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
     /// Explicit constraints after "must / should / needs to / handle / without / including …", split into items.
     static func requirements(in text: String) -> [String] {
         let lower = text.lowercased()
-        let cue = #"\b(must|should|needs? to|has to|have to|handles?|handling|supports?|without|including|while|ensure|make sure|so that|that can|able to|guarantee|deal with|cope with|survive|tolerate|account for|especially|particularly|specifically|in particular|such as|using)\b"#
+        let cue = #"\b(must|should|needs? to|has to|have to|handles?|handling|supports?|without|including|while|ensure|make sure|so that|that can|able to|guarantee|deal with|cope with|survive|tolerate|account for|especially|particularly|specifically|in particular|such as|using|across|whether (or not )?to|when to)\b"#
         guard let regex = try? NSRegularExpression(pattern: cue) else { return [] }
         var items: [String] = []
         let ns = lower as NSString
@@ -233,7 +233,8 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
                     .replacingOccurrences(of: #"^(be able to|be|also|the|to|any|all|when|where|if|for)\s+"#, with: "", options: .regularExpression)
                 let words = TextSimilarity.contentWords(trimmed)
                 guard (1...9).contains(words.count) else { continue }
-                let item = index == 0 && cueWord == "without" ? "without " + trimmed : trimmed
+                let item = index == 0 && cueWord == "without" ? "without " + trimmed
+                    : index == 0 && cueWord.hasPrefix("whether") || index == 0 && cueWord == "when to" ? "decide whether to " + trimmed : trimmed
                 if !items.contains(where: { $0.contains(item) || item.contains($0) }) { items.append(item) }
             }
         }
@@ -253,7 +254,7 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
 
     /// "Design the system, explain the trade-offs, and describe how you'd test it" → three parts.
     static func parts(in text: String) -> [String] {
-        let verbs = #"(design|explain|describe|compare|implement|write|build|discuss|outline|walk me through|tell me|show me|list|test|cover|mention|justify|estimate|sketch|identify|propose|define|how you'?d|how you would|what you'?d|why|prioriti[sz]e|investigate|communicate|diagnose|handle|fix|resolve|monitor|prevent|verify|escalate|document|secure|scale|deploy|migrate)"#
+        let verbs = #"(design|explain|describe|compare|implement|write|build|discuss|outline|walk me through|tell me|show me|list|test|cover|mention|justify|estimate|sketch|identify|propose|define|how you'?d|how you would|what you'?d|why|prioriti[sz]e|investigate|communicate|diagnose|handle|fix|resolve|monitor|prevent|verify|escalate|document|secure|scale|deploy|migrate|decide|roll back|rollback)"#
         let lower = text.lowercased()
         let pieces = lower.replacingOccurrences(of: #"(,\s*(and\s+)?(then\s+)?|\s+and\s+(then\s+)?|;\s*|\.\s+(then\s+)?(also\s+)?)(?="# + verbs + #"\b)"#,
                                                 with: "|", options: .regularExpression)
@@ -301,7 +302,7 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
         let structure: String
         switch kind {
         case .troubleshooting:
-            structure = "This is a troubleshooting scenario. Work through it as investigate, diagnose, resolve, verify, document: say what you'd check first and why, how you'd narrow down the cause, what you'd change, and how you'd confirm it's fixed. Don't jump to a fix before explaining how you'd find the cause."
+            structure = "This is a troubleshooting scenario. Work through it as investigate, diagnose, resolve, verify, document: say what you'd check first and why, how you'd narrow down the cause, what you'd change, and how you'd confirm it's fixed. Don't jump to a fix before explaining how you'd find the cause. If the request asks for a decision (for example whether to roll back), state the criteria and the decision explicitly."
         case .systemDesign:
             structure = "This is a system design task. Cover the requirements it states, the main components and how data flows between them, then reliability (failures, retries, duplicates, recovery), security, and the key trade-off. For background or asynchronous work, think about durable job storage, idempotency, retries with exponential backoff and jitter, job leases or visibility timeouts for crashed workers, dead-letter handling, backpressure and monitoring, but only where they serve the stated requirements. Be honest about delivery guarantees: queues give at-least-once processing, and external side effects such as emails can't be guaranteed exactly once, so describe how you'd make duplicates unlikely and harmless."
         case .coding:
@@ -328,6 +329,9 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
         var lines = [structure, "Length: \(sentenceRange(length)) Never drop one of the interviewer's requirements just to stay short."]
         if !requirements.isEmpty {
             lines.append("The interviewer's explicit requirements; your answer must address each one: " + requirements.joined(separator: "; ") + ".")
+        }
+        if requirements.contains(where: { $0.hasPrefix("decide whether to ") }) {
+            lines.append("The request asks for a decision: state the criteria and the decision explicitly.")
         }
         if items.count >= 2 {
             lines.append("Treat each of these separately and specifically, not as one group: " + items.joined(separator: "; ") + ".")
@@ -395,6 +399,11 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
             let generic: Set<String> = ["handle", "handles", "thousands", "lot", "lots", "many", "able", "make", "sure", "work", "time", "without", "differ", "differe", "use", "using"]
             let stems = TextSimilarity.contentWords(requirement).map { $0.lowercased() }.filter { !generic.contains($0) }.map { Self.stem($0) }
             guard !stems.isEmpty else { return false }
+            // A decision ("whether to roll back") is answered only if its action itself is discussed.
+            if requirement.hasPrefix("decide whether to ") {
+                let action = requirement.dropFirst("decide whether to ".count).split(separator: " ").first.map(String.init) ?? ""
+                return !said(Self.stem(action))
+            }
             return !stems.contains { said($0) }
         }
         // Each listed item needs a clause of its own ("Students can only read their own rows"), not a shared list.
@@ -419,6 +428,7 @@ nonisolated struct InterviewIntent: Equatable, Sendable {
         "weake": ["least privilege", "policy", "policies", "secure", "exception"],
         "organ": ["organisation", "organization", "tenant", "everyone", "company-wide", "policy"],
         "admin": ["admin"],
+        "roll": ["rollback", "roll back", "rolling back", "revert", "previous release", "previous version", "redeploy"],
         "permi": ["policy", "policies", "can read", "can update", "can see", "can only", "access", "allowed"],
         "acces": ["policy", "policies", "can read", "can see", "can only", "allowed"],
     ]

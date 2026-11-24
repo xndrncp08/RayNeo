@@ -118,6 +118,7 @@ enum Screenshot {
 
     @Test func nothingFromTheHalfQuestionReachesTheGlassesWhileTheInterviewerIsStillSpeaking() async throws {
         await model.startSession()
+        model.engine.continuationHold = 30 // the hold itself is under test, not its timeout (busy test machines stretch sleeps)
         ai.perWordDelay = .milliseconds(2)
         ai.queuedAnswers = [Screenshot.partialAnswer, Screenshot.good]
         speech.onEvent?(.final(Screenshot.first + ".", start: 0, end: 5))

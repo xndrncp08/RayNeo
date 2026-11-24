@@ -161,13 +161,17 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         knowledge.document.portfolio = "Built a private CRM for Acme Corp."
         let model = AppModel(defaults: nil, audio: MockAudio(), speechFactory: { [MockSpeech()] }, aiFactory: { _ in MockAIProvider() },
                              glassesFactory: { _ in MockGlassesDisplay() }, knowledge: knowledge, permissions: { nil })
+        let personal = "Tell me about your experience with CRMs."
         model.settings.aiModel = .geminiFlash
-        #expect(!model.engine.instructionsProvider(.technical).contains("Acme"))
+        #expect(!model.notes(for: personal).joined().contains("Acme"))
         model.settings.geminiIncludePortfolio = true
-        #expect(model.engine.instructionsProvider(.technical).contains("Acme"))
+        #expect(model.notes(for: personal).joined().contains("Acme"))
         model.settings.aiModel = .appleOnDevice
         model.settings.geminiIncludePortfolio = false
-        #expect(model.engine.instructionsProvider(.technical).contains("Acme"))
+        #expect(model.notes(for: personal).joined().contains("Acme"))
+        // Never in the system instructions, and never for a question that doesn't ask about your own work.
+        #expect(!model.engine.instructionsProvider(.technical).contains("Acme"))
+        #expect(!model.notes(for: "How would you investigate a slow CRM integration?").joined().contains("Acme"))
     }
 }
 

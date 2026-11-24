@@ -113,6 +113,7 @@ struct Diagnostics: Equatable {
     /// When the current utterance started and when the last turn was emitted (wall clock), so an answer is not
     /// shown while the interviewer is still finishing the question it answers.
     private var speechStartedAt: Date?
+    private var processingTurns = false
     private var lastTurnEmittedAt: Date?
     /// Assembler output waiting for the next tick (revisions arrive with final results).
     private var assembled: [AssemblerOutput] = []
@@ -170,14 +171,13 @@ struct Diagnostics: Equatable {
                                          classifier: QuestionDetector(technicalKeywords: knowledge.keywords))
         engine.ai = { [unowned self] in self.aiProvider }
         engine.instructionsProvider = { [unowned self] category in
-            // The portfolio and profile are private: only sent to the cloud if the user explicitly allows it.
-            guard self.personalContextAllowed else {
-                return InterviewPromptBuilder.instructions(for: category, length: self.settings.answerLength, portfolio: "")
-            }
-            let profile = self.settings.personalMemoryEnabled ? self.memory.profileSummary() : ""
-            let background = [profile, self.knowledge.document.portfolio].filter { !$0.isEmpty }.joined(separator: "\n")
-            return InterviewPromptBuilder.instructions(for: category, length: self.settings.answerLength, portfolio: background)
+            // Profile and portfolio never sit in the system instructions: they are added to a request only when the
+            // question asks about your own work (`notes(for:)`), and only if allowed for the cloud.
+            InterviewPromptBuilder.instructions(for: category, length: self.settings.answerLength, portfolio: "",
+                                                backgroundOnRequest: self.personalContextAllowed && !self.personalBackground.isEmpty)
         }
+        engine.personalContext = { [unowned self] in self.personalDecision(for: $0) }
+        engine.personalProjects = { [unowned self] in self.memory.projects.compactMap(\.project) }
         engine.hasPortfolio = { [unowned self] in
             !self.knowledge.document.portfolio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -216,6 +216,7 @@ struct Diagnostics: Equatable {
             self.editor.expect(blockID: blockID, language: language, structures: structures)
         }
         engine.questionContinues = { [unowned self] in
+            if self.processingTurns { return true }
             guard self.assembler.hasPendingSpeech, let started = self.speechStartedAt, let emitted = self.lastTurnEmittedAt,
                   started >= emitted, started.timeIntervalSince(emitted) <= self.settings.continuationGap else { return false }
             // Reading an answer aloud is not the interviewer continuing.
@@ -638,6 +639,9 @@ struct Diagnostics: Equatable {
         }
         let ready = assembled + (assembler.tick(now: now).map { [$0] } ?? [])
         assembled = []
+        // Until an emitted turn is processed (it may complete the question being answered), a held answer keeps waiting.
+        processingTurns = !ready.isEmpty
+        defer { processingTurns = false }
         for output in ready { await process(output) }
     }
 
@@ -774,17 +778,47 @@ struct Diagnostics: Equatable {
     /// conversation so far, each within a fixed budget.
     var interviewContextAllowed: Bool { settings.aiModel != .geminiFlash || settings.geminiIncludeInterviewContext }
 
+    /// Profile and portfolio text (personal; sent only for questions that ask about your own work).
+    var personalBackground: String {
+        [settings.personalMemoryEnabled ? memory.profileSummary() : "", knowledge.document.portfolio]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    func personalDecision(for question: String) -> PersonalContextPolicy.Decision {
+        PersonalContextPolicy.decide(question, projects: memory.projects.compactMap(\.project), activeProject: conversation.project)
+    }
+
     func notes(for question: String) -> [String] {
         // Bounded prompt: smaller budgets keep the first token fast; only what is relevant is included.
         var notes = knowledge.notes(for: question, limit: 2, maximumCharacters: 400)
         lastMemoryReferences = []
-        if personalContextAllowed, settings.personalMemoryEnabled {
-            let retrieval = memory.retrieve(question, topicProject: conversation.project, budget: 700)
-            if !retrieval.entries.isEmpty { notes = Array(notes.prefix(1)) } // your memory beats generic topic notes
-            lastMemoryReferences = retrieval.references
-            if !retrieval.text.isEmpty {
-                notes.append("Verified background (mention a project only if it directly answers the question; never add details beyond this):\n\(retrieval.text)")
-                DiagnosticLog.shared.record(.pipeline, "Memory retrieved: \(retrieval.references.count) reference(s): \(retrieval.references.joined(separator: ", "))")
+        let personal = personalDecision(for: question)
+        if personalContextAllowed, !personal.wanted, settings.personalMemoryEnabled {
+            DiagnosticLog.shared.record(.pipeline, "Personal memory not retrieved: \(personal.reason)")
+        }
+        if personalContextAllowed, personal.wanted {
+            // One background block: retrieved project memory, then profile and portfolio lines not already in it.
+            var background: [String] = []
+            if settings.personalMemoryEnabled {
+                let retrieval = memory.retrieve(question, topicProject: conversation.project, budget: 700)
+                if !retrieval.entries.isEmpty { notes = Array(notes.prefix(1)) } // your memory beats generic topic notes
+                lastMemoryReferences = retrieval.references
+                if !retrieval.text.isEmpty {
+                    background.append(retrieval.text)
+                    DiagnosticLog.shared.record(.pipeline, "Memory retrieved: \(retrieval.references.count) reference(s): \(retrieval.references.joined(separator: ", "))")
+                }
+            }
+            let retrieved = background.joined(separator: "\n")
+            background += personalBackground.components(separatedBy: "\n").filter { !$0.isEmpty && !retrieved.contains($0) }
+            // Whole lines within the budget, most relevant (retrieved) first.
+            var kept: [String] = [], used = 0
+            for line in background.flatMap({ $0.components(separatedBy: "\n") }) where used + line.count <= 1000 {
+                kept.append(line)
+                used += line.count + 1
+            }
+            if !kept.isEmpty {
+                notes.append("Verified background (the ONLY experience you may mention; mention a project only if it answers the question; never add details beyond this):\n"
+                             + kept.joined(separator: "\n"))
             }
         }
         guard interviewContextAllowed else { return notes }

@@ -533,3 +533,35 @@ No live Gemini or device measurements yet.
 - *Display hold:* while the interviewer is still speaking within `continuationGap` of the turn, no early frame is shown, and a finished answer waits up to 3 s. A revision cancels it during the wait; if nobody keeps speaking, there is no delay.
 - *Follow-ups:* a self-contained request (five or more subject words, no back-reference) is a new question even when it shares the topic's words. Detector follow-up cues inside long questions are ignored.
 - *Validation:* requirements now come from qualifier clauses too. Enumerated items ("students, instructors, and administrators") must each be explained in a clause of their own; a list mention doesn't count. Role-based security questions get per-role guidance (ownership, assignments, admin rights, RLS enforcement, server-held keys) and must say how authorization is tested.
+
+## Update 2026-11-23 (v): personal memory only when the question asks for it
+
+**Root cause.** Three things combined to put BMR Pharmacy Sales Tracker into a general incident answer:
+- Memory retrieval scored by technical overlap alone. The BMR entry ("React frontend. Node.js and Express backend. PostgreSQL database") matched an incident question about the frontend, backend and PostgreSQL well above the threshold.
+- The system instructions carried the whole profile and portfolio on every request.
+- The persona told the model to "mention one concrete detail" from a fitting project.
+
+Nothing validated against unsolicited anecdotes.
+
+**Fixes**
+- *Policy:* `PersonalContextPolicy.decide` includes personal context only when the question names a project, uses an own-experience cue ("your project", "have you", "how does your experience apply"…), is behavioural, or is a follow-up (reference, pronoun) within an active project discussion. General, hypothetical, troubleshooting and design questions get none.
+- *Prompt:*
+  - Profile and portfolio left the system instructions. One bounded "Verified background" block (whole lines, 1,000 characters) is added to the request only when wanted.
+  - The persona now forbids personal anecdotes in general answers.
+  - `geminiIncludePortfolio` still gates the cloud.
+- *Validation:* when personal context isn't wanted, an answer that names a project or claims past experience is rejected once with a targeted reason. Remaining anecdote sentences in the second draft are removed.
+- *Decisions:* "whether to roll back" (or "when to…") is a requirement whose action must be discussed, and the guidance asks for explicit criteria.
+- *Engine:* an explicit cancellation check after the continuation hold. A revision that cancelled a held generation could otherwise still display it. This surfaced as an intermittent test failure.
+
+## Update 2026-11-23 (w): question-to-answer contract
+
+`AnswerContract` (Intelligence/AnswerContract.swift) is built once per answer from the finalized question.
+
+**Contents:** the main task (the request without its framing, e.g. "secure a next.js application"), plus the `InterviewIntent` requirements, listed items, decisions, parts and the personal-memory boundary.
+
+**Use:**
+- It adds a "Main task" line to the prompt.
+- Before display it checks that the task's action or object is discussed in a substantive clause (four words or more) and that each part of a multi-part request is covered, along with the existing requirement, item, decision and testing checks.
+- It enforces the personal-memory boundary on every answer, and on streamed early frames, so an unsolicited anecdote never reaches the lens even as a first sentence.
+- On failure, the existing single targeted regeneration runs.
+- A scenario statement with no request sets no task.

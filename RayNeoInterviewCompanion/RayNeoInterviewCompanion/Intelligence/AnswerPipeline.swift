@@ -49,8 +49,14 @@ import Foundation
     /// Receives the skeleton of the first draft as soon as its block is complete and validated.
     var onSkeleton: (String) -> Void = { _ in }
     private var skeletonReported = false
+    /// Whether this question asks about the developer's own projects or experience (`PersonalContextPolicy`).
+    /// When it doesn't, personal anecdotes are rejected and, on the second draft, removed.
+    var personalWanted = true
+    var personalProjects: [String] = []
     /// What the request asks for (structure, length, explicit requirements), decided once per answer.
     private var intent = InterviewIntent(kind: .question, confidence: 0, reason: "")
+    /// The question-to-answer contract checked before an answer is displayed.
+    private(set) var contract = AnswerContract(question: "", intent: InterviewIntent(kind: .question, confidence: 0, reason: ""))
     private var firstSentenceAt: Double?
 
     init(provider: any AIResponseProvider, instructions: @escaping (QuestionCategory) -> String, notes: @escaping (String) -> [String],
@@ -100,6 +106,8 @@ import Foundation
         }
         intent = InterviewIntent.classify(question, hasContext: previous != nil)
         if intent.kind == .followUp || previous != nil, intent.kind == .question || intent.kind == .explanation { intent.kind = .followUp }
+        contract = AnswerContract(question: question, intent: intent, personalAllowed: personalWanted, projects: personalProjects)
+        log("Answer #\(answerID) contract: task \(contract.task.map { "\"\($0)\"" } ?? "none"), \(intent.requirements.count + intent.items.count) requirement(s), \(intent.parts.count) part(s), personal memory \(personalWanted ? "allowed" : "not allowed")")
         let routeMilliseconds = now().timeIntervalSince(routeStart) * 1000
         log(String(format: "Answer #%d intent: %@ (%.2f, %@), %d requirement(s), %d part(s)", answerID, intent.kind.label, intent.confidence,
                    intent.reason, intent.requirements.count, intent.parts.count))
@@ -134,6 +142,10 @@ import Foundation
                                                           wantsCode: wantsCode, context: context, started: started, firstToken: &firstToken)
             second = trimFiller(second, category: route.category) ?? second
             if route.category != .coding { second = NaturalAnswerStyle.polish(second) }
+            if !personalWanted, case let found = PersonalContextPolicy.anecdotes(in: second, projects: personalProjects), !found.isEmpty {
+                log("Answer #\(answerID): removed \(found.count) unsolicited personal sentence(s) from the second draft")
+                second = PersonalContextPolicy.removing(found, from: second)
+            }
             let secondVerdict = validate(second, snippet: secondSnippet, wantsCode: wantsCode, question: subject, category: route.category)
             snippet = secondSnippet
             walkthrough = lastWalkthrough
@@ -177,9 +189,11 @@ import Foundation
         if category == .technical, let repetition = NaturalAnswerStyle.repetitiveOpening(text) {
             return AnswerValidator.Verdict(passed: false, reason: repetition)
         }
-        // Deterministic completeness: every requirement the interviewer stated is at least mentioned.
-        if category == .technical, case let missing = intent.missingRequirements(in: text), !missing.isEmpty {
-            return AnswerValidator.Verdict(passed: false, reason: "did not address the interviewer's requirement(s): \(missing.joined(separator: "; ")); cover each one")
+        // The question-to-answer contract: task, requirements, parts (technical answers) and the personal-memory
+        // boundary (every answer).
+        let violations = contract.violations(in: text).filter { category == .technical || $0.hasPrefix("a personal project") }
+        if category != .math, !violations.isEmpty {
+            return AnswerValidator.Verdict(passed: false, reason: "did not address the interviewer's requirement(s): \(violations.joined(separator: "; ")); cover each one")
         }
         return verdict
     }
@@ -216,7 +230,8 @@ import Foundation
         default: intent.maximumTokens(answerLength)
         }
         // Request-specific structure goes in the prompt, so the system instructions stay the same across answers.
-        let guidance = category == .technical || category == .coding && !wantsCode ? intent.guidance(length: answerLength) : nil
+        let guidance = category == .technical || category == .coding && !wantsCode
+            ? [contract.promptLine, intent.guidance(length: answerLength)].compactMap { $0 }.joined(separator: "\n") : nil
         let request = AnswerRequest(instructions: instructionText,
                                     prompt: InterviewPromptBuilder.prompt(question: question, followUpTo: previous,
                                                                           notes: (context.map { [$0] } ?? []) + notes(question), guidance: guidance),

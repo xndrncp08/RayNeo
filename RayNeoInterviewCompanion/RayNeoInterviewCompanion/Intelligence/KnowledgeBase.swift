@@ -115,7 +115,7 @@ enum InterviewPromptBuilder {
     Explain your reasoning as you go (why you'd check or choose something), like a developer thinking out loud with a colleague.
     Use plain words instead of corporate ones (say "use", not "leverage" or "utilize"; avoid "robust", "seamless", "synergy", "cutting-edge"), and avoid unnecessary filler, generic motivational statements, and overly formal language.
     Don't repeat a point you already made, and don't start several sentences the same way.
-    When verified background includes a project that genuinely fits the question, mention one concrete detail from it naturally; never force a project into an unrelated answer.
+    Mention your own projects or past experience only when the interviewer asks about them and verified background is included with the request. For general, hypothetical, troubleshooting and design questions, answer the technical question directly, with no personal anecdotes and no invented past debugging stories.
     For a follow-up, answer the latest question directly and build on what was already said instead of repeating it.
     When describing troubleshooting, explain what you'd check first, how you'd narrow down the problem, what you'd fix, and how you'd confirm it worked.
     Use a calm, approachable tone suitable for speaking directly to DJ, the technical interviewer.
@@ -126,9 +126,14 @@ enum InterviewPromptBuilder {
     Style example only. Too formal: "In order to effectively diagnose the aforementioned authentication failure, I would initiate a comprehensive investigation of the identity management infrastructure." Better: "I'd start by checking whether the account is active and whether the user has the right license. Then I'd look at the Entra sign-in logs to see if it's a password issue, an MFA problem, or a conditional access policy blocking them."
     """
 
-    static func instructions(for category: QuestionCategory = .technical, length: AnswerLength, portfolio: String) -> String {
+    /// `backgroundOnRequest`: personal background exists but is sent with a request only when the question asks for
+    /// it (`PersonalContextPolicy`), so the system instructions stay free of project details.
+    static func instructions(for category: QuestionCategory = .technical, length: AnswerLength, portfolio: String,
+                             backgroundOnRequest: Bool = false) -> String {
         let trimmedPortfolio = String(portfolio.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1500))
-        let experience = trimmedPortfolio.isEmpty
+        let experience = backgroundOnRequest && trimmedPortfolio.isEmpty
+            ? "Verified background comes with a request only when the question asks about the developer's own work; mention personal projects or experience only then, and only what it says. Code requests are answered directly."
+            : trimmedPortfolio.isEmpty
             ? "The developer has not provided any verified experience. For questions about their own past projects or history, give a short, honest way to approach the answer and do not invent details. This never applies to requests to write, show, explain or test code: answer those directly."
             : "Verified background (the ONLY experience you may mention):\n\(trimmedPortfolio)"
         let style: String

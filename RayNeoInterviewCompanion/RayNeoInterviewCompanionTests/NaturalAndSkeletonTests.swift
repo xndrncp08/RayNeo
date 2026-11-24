@@ -247,13 +247,16 @@ enum Skeleton {
         model.conversation.record(question: "Tell me about the Diskarte database.", answer: String(repeating: "Supabase Postgres with realtime channels. ", count: 12),
                                   category: .technical, kind: .newQuestion, projects: model.memory.projects.compactMap(\.project))
         let question = "How did you secure the realtime messaging and the database in Diskarte?"
-        let now = model.notes(for: question).joined(separator: "\n").count
+        // Background moved from the system instructions into the request (only when asked for), so the whole
+        // request is compared: instructions + notes.
+        let now = model.notes(for: question).joined(separator: "\n").count + model.engine.instructionsProvider(.technical).count
         // The previous budgets, with the same section labels: 2 × 600-char topic notes, 900 memory, 700 conversation.
         let previous = (model.knowledge.notes(for: question)
                         + ["Verified background (mention a project only if it directly answers the question; never add details beyond this):\n"
                            + model.memory.retrieve(question, topicProject: model.conversation.project, budget: 900).text,
                            "Conversation so far (resolve \"that\", \"it\" and follow-ups against this):\n" + model.conversation.context(budget: 700)])
             .joined(separator: "\n").count
+            + InterviewPromptBuilder.instructions(for: .technical, length: .standard, portfolio: model.memory.profileSummary()).count
         print("LATENCY prompt context: \(now) chars now vs \(previous) chars with the previous budgets")
         #expect(now < previous)
         #expect(model.notes(for: question).joined().contains("Diskarte"))

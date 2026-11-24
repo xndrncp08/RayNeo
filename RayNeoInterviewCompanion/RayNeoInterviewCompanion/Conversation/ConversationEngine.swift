@@ -48,6 +48,11 @@ struct FilterCounters: Equatable, Sendable {
     /// The interviewer is still talking right after the turn being answered (probably finishing the question):
     /// nothing from that generation reaches the glasses yet.
     var questionContinues: () -> Bool = { false }
+    /// Whether a question asks about the developer's own projects or experience, and the project names.
+    var personalContext: (String) -> PersonalContextPolicy.Decision = { _ in .init(wanted: true, reason: "no policy") }
+    var personalProjects: () -> [String] = { [] }
+    /// The current generation's personal-memory boundary, applied to streamed sentences too.
+    private var earlyPersonal: (allowed: Bool, projects: [String]) = (true, [])
     /// Longest wait for that continuation before a finished answer is shown anyway.
     var continuationHold: Double = 3
     /// How each turn's request was first answered, so a revision regenerates the same request
@@ -500,6 +505,11 @@ struct FilterCounters: Equatable, Sendable {
                 pipeline.answerID = answerID
                 pipeline.groundingCheck = groundingCheck
                 pipeline.codingResolver = codingResolver
+                let personal = personalContext(question.text)
+                pipeline.personalWanted = personal.wanted
+                pipeline.personalProjects = personalProjects()
+                earlyPersonal = (personal.wanted, pipeline.personalProjects)
+                note("Answer #\(answerID): personal memory \(personal.wanted ? "included" : "not included") (\(personal.reason))")
                 pipeline.codingSkeleton = settings.codingSkeleton && settings.codeDisplay == .tutor
                 pipeline.onSkeleton = { [weak self] code in self?.earlySkeleton(code, answerID: answerID) }
                 output = try await pipeline.answer(question.text, previous: previous.map { (question: $0.0, answer: $0.1) })
@@ -535,6 +545,8 @@ struct FilterCounters: Equatable, Sendable {
                 holds += 1
                 try await Task.sleep(for: .milliseconds(100))
             }
+            // The loop can end on its condition right after a revision cancelled this generation: never show it then.
+            try Task.checkCancellation()
             if now().timeIntervalSince(holdStarted) >= 0.1 { note(String(format: "Answer #%d held %.1fs while the interviewer finished speaking", answerID, now().timeIntervalSince(holdStarted))) }
             let replacing = currentAnswer != nil
             // Every automatic replacement can be undone (classic and continuous conversation); the answer to a
@@ -639,6 +651,8 @@ struct FilterCounters: Equatable, Sendable {
         guard settings.earlyFirstFrame, !prepareOnly, answerID == generatingAnswerID, category == .technical else { return }
         // Never show the start of an answer while the interviewer is still finishing the question.
         guard !questionContinues() else { return }
+        // An unsolicited personal anecdote never reaches the lens, even as a first sentence.
+        guard earlyPersonal.allowed || PersonalContextPolicy.anecdotes(in: partial, projects: earlyPersonal.projects).isEmpty else { return }
         // The same clean-up as the final answer, so the early frame is a prefix of it.
         let complete = NaturalAnswerStyle.polish(AnswerFormatter.completeSentences(partial))
         guard !complete.isEmpty, complete != earlyFrameSource else { return }

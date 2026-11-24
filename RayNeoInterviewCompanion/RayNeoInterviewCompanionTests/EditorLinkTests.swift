@@ -212,8 +212,13 @@ struct TestEditorClient {
         var third = TestEditorClient()
         let wire3 = Wire()
         let token3 = pair(&third, wire: wire3)
-        var tampered = third.seal(["type": "state", "file": "b.js"], at: clock)
-        tampered[tampered.count - 5] ^= 0x01
+        // Flip one ciphertext byte (not a JSON character or base64 padding bit, which may not change the box).
+        let sealed = third.seal(["type": "state", "file": "b.js"], at: clock)
+        var envelope = try! JSONDecoder().decode(EditorEnvelope.self, from: sealed.dropLast())
+        var box = Data(base64Encoded: envelope.box)!
+        box[box.count / 2] ^= 0x01
+        envelope.box = box.base64EncodedString()
+        let tampered = try! JSONEncoder().encode(envelope) + Data([0x0A])
         bridge.receive(tampered, token: token3)
         #expect(!bridge.connected)
         var fourth = TestEditorClient()

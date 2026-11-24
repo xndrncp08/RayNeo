@@ -236,9 +236,10 @@ import Testing
         model.settings.geminiIncludeInterviewContext = false
         let cloud = model.notes(for: "What about security?").joined(separator: "\n")
         #expect(!cloud.contains("Diskarte") && !cloud.contains("Conversation so far"))
-        #expect(!model.engine.instructionsProvider(.technical).contains("SAIT"))
+        #expect(!model.notes(for: "Tell me about your background.").joined().contains("SAIT"))
         model.settings.geminiIncludePortfolio = true
-        #expect(model.engine.instructionsProvider(.technical).contains("SAIT"))
+        #expect(model.notes(for: "Tell me about your background.").joined().contains("SAIT"))
+        #expect(!model.engine.instructionsProvider(.technical).contains("SAIT"))
     }
 }
 
